@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 // Clarification #1: allowlist is checked against DIRECT dependencies only; denylist scans the whole lockfile.
-const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv']);
+const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk']);
 const DENYLIST = [
   'trading-platform', '@trading-platform',
   'pg', 'ccxt',

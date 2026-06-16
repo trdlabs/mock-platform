@@ -15,11 +15,13 @@
     "check": "pnpm typecheck && pnpm verify:contract-isolation && pnpm test",
     "check:ci": "pnpm check && pnpm verify:no-forbidden-deps && pnpm verify:no-secrets",
     "start": "node dist/src/bin/start-mock-ops.js",
+    "start:research-mcp": "node dist/src/bin/start-research-mcp.js",
     "dev": "tsx src/bin/start-mock-ops.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
     "@hono/node-ws": "^1.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.20.0",
     "hono": "^4.12.0"
   },
