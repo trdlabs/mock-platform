@@ -226,6 +226,12 @@ export interface ArtifactPage {
 export type ReadArtifactResult = { readonly ok: true; readonly page: ArtifactPage } | GatewayFailure;
 ```
 
+> **Pre-implementation verifications (LOCKED — checked against lab's vendored `@trading-platform/sdk@0.3.0` `.d.ts` + `trading-lab/src`):**
+> - **`runKind` / `evidence.seed` are decode-only structural fields.** `runKind` is never branched on in `trading-lab/src` (0 usages); `evidence.seed` is never read from a result (only `evidence.contractVersion` is, in `platform-comparison.ts`). So `runKind:'baseline-only'` + `evidence.seed:0` are safe structural defaults. Lab gates on `summary.comparison !== undefined` (NOT `runKind`), so a `baseline-only` summary with `comparison` omitted is coherent — lab treats it as "no comparison" and never calls `mapPlatformComparison` on it.
+> - **`metricCatalog` is a capability declaration, not a presence requirement.** No lab code cross-checks catalog keys against `summary.metrics` (which may even be `{}`). Omitting `top_trade_contribution_pct`/`sharpe` from `metrics` is safe. (The only metric enforcement is on `comparison.baseline/variant`, which the mock omits → never reached.)
+> - **`read_artifact` serves backtest/research-RUN artifacts** (keyed by `submit_run`'s `runId`; all `ArtifactType` values are simulation outputs) → the mock returns `backtestUnavailable()` (Task 6), NOT a `validation_error`. Lab does not call it today.
+> - **MCP protocol version:** a single `@modelcontextprotocol/sdk@1.29.0` resolves in lab's tree; `@trading-platform/sdk@0.3.0` peer-deps `^1.29.0` (optional, not bundled). The mock's `^1.29.0` server is wire-identical to lab's client — no framing drift (Task 2 pins it).
+
 - [ ] **Step 3: Verify typecheck + isolation**
 
 Run: `pnpm typecheck && pnpm verify:contract-isolation`
@@ -365,6 +371,8 @@ const bundle = {
       startedAtMs: 100, finishedAtMs: 900, lastSeenMs: 900, symbols: ['ETHUSDT'] },
     { runId: 'r2', mode: 'live', status: 'running', strategy: { name: 's', version: '1' },
       startedAtMs: 1, finishedAtMs: null, lastSeenMs: 2, symbols: ['BTCUSDT'] },
+    { runId: 'r3', mode: 'live', status: 'weird', strategy: { name: 's', version: '1' },
+      startedAtMs: 5, finishedAtMs: null, lastSeenMs: 6, symbols: ['BTCUSDT'] },
   ],
   researchByRun: {
     r1: { summary: { runRef: 'r1', mode: 'paper',
@@ -420,7 +428,23 @@ describe('projections', () => {
     const r = runResult(bundle, 'rX');
     expect(r.ok).toBe(false);
   });
+  it('runResult on a non-terminal (running) run returns the status arm, NOT a fabricated summary', () => {
+    const r = runResult(bundle, 'r2');
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.kind !== 'status') return;
+    expect(r.view.status).toBe('running');
+  });
+  it('an unexpected run status never silently becomes completed — it errors (unmappable_status)', () => {
+    const s = runStatus(bundle, 'r3');
+    expect(s.ok).toBe(false);
+    if (s.ok) return;
+    expect(s.error.code).toBe('unmappable_status');
+    expect(runResult(bundle, 'r3').ok).toBe(false);
+  });
 });
+```
+
+> **mapStatus is exhaustive over the closed `BotRunStatus` set (`running|finished|crashed|aborted`)** — `default→completed` is removed. An unexpected status (which the AJV-validated snapshot should never contain) yields an explicit `internal_gateway_error/unmappable_status`, never a false `completed`. Non-terminal runs use the `RunResultResult` **status arm** rather than a fabricated summary.
 ```
 
 - [ ] **Step 2: Run it — Expected: FAIL (module not found).**
@@ -434,7 +458,7 @@ import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
 import type { ResearchMetrics } from '../../contract/research-read/dto.js';
 import type {
   ResearchCapabilityDescriptor, ListDatasetsResult, RunStatus, RunStatusResult,
-  RunResultResult, RunResultSummary,
+  RunStatusView, RunResultResult, RunResultSummary,
 } from '../../contract/research-read/mcp/dto.js';
 import {
   MCP031_CONTRACT_VERSION, MCP031_SUPPORTED_CONTRACT_VERSIONS,
@@ -459,20 +483,31 @@ export function listDatasets(): ListDatasetsResult {
   return { datasets: [] };
 }
 
-function mapStatus(botStatus: string): RunStatus {
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'canceled', 'expired', 'timed_out']);
+
+/** Maps the closed snapshot BotRunStatus set to an MCP RunStatus. Returns null for ANY unexpected value
+ *  so the caller emits an explicit error — an unknown/intermediate status must NEVER silently become
+ *  'completed' (that would be a false "success" for lab). No default→completed. */
+function mapStatus(botStatus: string): RunStatus | null {
   switch (botStatus) {
     case 'finished': return 'completed';
     case 'running': return 'running';
     case 'crashed': return 'failed';
     case 'aborted': return 'canceled';
-    default: return 'completed';
+    default: return null;
   }
+}
+
+function statusView(runId: string, status: RunStatus, startedAtMs: number): RunStatusView {
+  return { jobId: `job_${runId}`, runId, status, timeline: { acceptedAtMs: startedAtMs } };
 }
 
 export function runStatus(bundle: SnapshotBundle, runId: string): RunStatusResult {
   const run = bundle.runs.find((r) => r.runId === runId);
   if (!run) return { ok: false, error: gatewayError('validation_error', 'run_not_found', 'run not found') };
-  return { ok: true, view: { jobId: `job_${runId}`, runId, status: mapStatus(run.status), timeline: { acceptedAtMs: run.startedAtMs } } };
+  const status = mapStatus(run.status);
+  if (status === null) return { ok: false, error: gatewayError('internal_gateway_error', 'unmappable_status', `unmappable run status '${run.status}'`) };
+  return { ok: true, view: statusView(runId, status, run.startedAtMs) };
 }
 
 function toNum(s: string): number | undefined {
@@ -494,12 +529,17 @@ function projectMetrics(rm: ResearchMetrics): Record<string, number> {
 }
 
 export function runResult(bundle: SnapshotBundle, runId: string): RunResultResult {
-  const research = readResearchResult(bundle, runId);
   const run = bundle.runs.find((r) => r.runId === runId);
-  if (!research || !run) return { ok: false, error: gatewayError('validation_error', 'run_not_found', 'run not found') };
+  if (!run) return { ok: false, error: gatewayError('validation_error', 'run_not_found', 'run not found') };
+  const status = mapStatus(run.status);
+  if (status === null) return { ok: false, error: gatewayError('internal_gateway_error', 'unmappable_status', `unmappable run status '${run.status}'`) };
+  // Non-terminal run → the union's status arm (no summary exists yet); never a fabricated terminal summary.
+  if (!TERMINAL_STATUSES.has(status)) return { ok: true, kind: 'status', view: statusView(runId, status, run.startedAtMs) };
+  const research = readResearchResult(bundle, runId);
+  if (!research) return { ok: false, error: gatewayError('validation_error', 'result_unavailable', 'no result summary for this run') };
   const summary: RunResultSummary = {
     runId,
-    status: mapStatus(run.status),
+    status,
     runKind: 'baseline-only',
     validationIssues: [],
     metrics: projectMetrics(research.summary.metrics),
@@ -627,7 +667,7 @@ describe('dispatchTool', () => {
     expect(r.ok).toBe(true);
     expect(r.summary!.metrics.pnl).toBeCloseTo(24.25);
   });
-  it.each(['validate_module', 'submit_run', 'cancel_run'])('%s → backtest-unavailable (audited rejected)', (name) => {
+  it.each(['validate_module', 'submit_run', 'cancel_run', 'read_artifact'])('%s → backtest-unavailable (audited rejected)', (name) => {
     const r = parse(dispatchTool(name, {}, ctx)) as { ok: boolean; error: { message: string } };
     expect(r.ok).toBe(false);
     expect(r.error.message).toBe('backtesting_moved_to_trading_backtester');
@@ -677,8 +717,10 @@ export function dispatchTool(name: string, args: unknown, ctx: ToolCtx): McpTool
     case 'get_run_result': ctx.audit(name, 'accepted'); return asResult(runResult(ctx.bundle, runId));
     case 'validate_module':
     case 'submit_run':
-    case 'cancel_run': ctx.audit(name, 'rejected'); return asResult(backtestUnavailable());
-    case 'read_artifact': ctx.audit(name, 'rejected'); return asResult({ ok: false, error: gatewayError('validation_error', 'read_artifact_unsupported', 'artifact reads are not available in the mock') });
+    case 'cancel_run':
+    // read_artifact serves backtest/research-RUN artifacts (keyed by submit_run's runId; all ArtifactType
+    // values are simulation outputs) — the honest "moved" reason, not a validation_error.
+    case 'read_artifact': ctx.audit(name, 'rejected'); return asResult(backtestUnavailable());
     default: return asResult({ ok: false, error: gatewayError('validation_error', 'unknown_tool', `unknown tool ${name}`) });
   }
 }
@@ -766,6 +808,12 @@ describe('research MCP gateway (real stdio, end-to-end)', () => {
     expect(result.ok).toBe(true);
     expect(result.kind).toBe('summary');
     expect(result.summary!.metrics.pnl).toBeCloseTo(24.25);
+
+    // non-terminal (running) run → the status arm, never a fabricated terminal summary
+    const live = parseToolResult(await client.callTool({ name: 'get_run_result', arguments: { runId: 'run_live_001' } })) as { ok: boolean; kind?: string; view?: { status: string } };
+    expect(live.ok).toBe(true);
+    expect(live.kind).toBe('status');
+    expect(live.view!.status).toBe('running');
 
     const submit = parseToolResult(await client.callTool({ name: 'submit_run', arguments: {} })) as { ok: boolean; error?: { message: string } };
     expect(submit.ok).toBe(false);
