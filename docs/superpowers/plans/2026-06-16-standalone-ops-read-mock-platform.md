@@ -1245,7 +1245,7 @@ export const BUNDLE_SCHEMA = {
 - [ ] **Step 4: Create `src/snapshot/validate.ts`** (AJV — outside the contract layer)
 
 ```ts
-import Ajv from 'ajv';
+import { Ajv } from 'ajv';
 import { MANIFEST_SCHEMA, BUNDLE_SCHEMA } from '../contract/snapshot/schema.js';
 
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -1264,7 +1264,7 @@ export function assertValidBundle(obj: unknown): void {
 }
 ```
 
-> If `import Ajv from 'ajv'` errors under NodeNext ESM, use `import { Ajv } from 'ajv';` (ajv v8 exposes both). Keep `strict: false` so the hand-written schemas compile without strict-mode keyword warnings.
+> The named import `import { Ajv } from 'ajv'` is REQUIRED here: the default `import Ajv from 'ajv'` fails `tsc` under NodeNext + `verbatimModuleSyntax` (TS2351 "not constructable"), even though esbuild/vitest accept both. Keep `strict: false` so the hand-written schemas compile without strict-mode keyword warnings.
 
 - [ ] **Step 5: Run it — Expected: PASS.**
 
@@ -1300,7 +1300,8 @@ describe('scanForSecrets', () => {
     expect(() => scanForSecrets('bundle.json', '{"runs":[{"runId":"r_opaque1"}]}')).not.toThrow();
   });
   it('fails closed on an exchange API key pattern', () => {
-    expect(() => scanForSecrets('bundle.json', 'key=AKIA1234567890ABCD'))
+    // AWS access-key-ID format is AKIA + 16 chars; the regex requires {16}, so the fixture must have 16.
+    expect(() => scanForSecrets('bundle.json', 'key=AKIA1234567890ABCDEF'))
       .toThrow(/forbidden pattern/i);
   });
   it('fails closed on an absolute host path', () => {
