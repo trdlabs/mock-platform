@@ -27,3 +27,13 @@ These are not suggestions — run each step at the trigger.
 8. After every edit, **call** `check_guards` then `get_test_targets`.
 
 <!-- gortex:communities:end -->
+
+## What this repo is (do not drift)
+trading-mock-platform mirrors the READ surfaces of the private trading-platform from sanitized snapshots.
+- It MUST NOT import private platform runtime/core/db/execution/exchange/config, nor require the private
+  repo/package/GitHub auth at Docker build/run.
+- `src/contract/**` is import-clean and extractable (guard: `pnpm verify:contract-isolation`).
+- Two surfaces from one snapshot: Ops Read (office, HTTP/WS) and Research Read (lab, seam only here).
+- No backtesting is implemented or faked; backtest tools are `unavailable` (reason
+  `backtesting_moved_to_trading_backtester`). Execution belongs to the future trading-backtester.
+- Framing: office = Ops Read consumer; lab = research-read consumer (integration deferred); backtester = future.
