@@ -64,7 +64,12 @@ export function createApp(deps: AppDeps) {
   app.get('/ops/runs/:runId/summary', (c) => respond(c, handleSummary(bundle, c.req.param('runId'), now())));
   app.get('/ops/runs/:runId/analysis', (c) => respond(c, handleAnalysis(bundle, c.req.param('runId'))));
   app.get('/ops/trades', (c) => respond(c, handleTrades(bundle, c.req.query('runId') ?? '', now(), c.req.query('cursor'))));
-  app.get('/ops/events', (c) => respond(c, handleEvents(bundle, c.req.query('runId') ?? '', now(), c.req.query('cursor'))));
+  // GET → EventsPage list. A WebSocket upgrade falls through to the WS route registered below
+  // (Hono runs same-path handlers in order; this one yields via next() only for upgrades).
+  app.get('/ops/events', (c, next) => {
+    if (c.req.header('upgrade')?.toLowerCase() === 'websocket') return next();
+    return respond(c, handleEvents(bundle, c.req.query('runId') ?? '', now(), c.req.query('cursor')));
+  });
   app.get('/ops/decisions', (c) => respond(c, handleDecisions(bundle, c.req.query('runId') ?? '', now(), c.req.query('cursor'))));
   app.get('/ops/health/runtime', (c) => c.json(handleRuntimeHealth(bundle), 200));
   app.get('/ops/health/market', (c) => c.json(handleMarketHealth(bundle), 200));
