@@ -56,3 +56,17 @@ What it enforces, automatically:
 Run all of it locally with `pnpm check:ci`.
 
 **Manual operator step (one-time):** enable branch protection on `main` requiring the **`checks`** and **`docker`** status checks before merge (GitHub → Settings → Branches → Branch protection rules). CI cannot set this itself.
+
+## Surface B — Research Read (trading-lab, stdio MCP gateway)
+
+`trading-lab` reads the mock through its current MCP-over-stdio path — point it at the gateway with env only, no lab code change:
+
+```
+TRADING_PLATFORM_INTEGRATION=mcp
+TRADING_PLATFORM_GATEWAY_COMMAND=docker
+TRADING_PLATFORM_GATEWAY_ARGS=run -i --rm -e MOCK_SNAPSHOT_REF=fixtures/2026-06-16-synthetic trading-mock-platform:dev node dist/src/bin/start-research-mcp.js
+# optional access control (sha256-hex allowlist; empty = spawn-trusted):
+#   pass MOCK_RESEARCH_TOKENS (expected) into the container and MOCK_RESEARCH_TOKEN (raw) via the spawn env
+```
+
+The gateway speaks the MCP-031 contract (`017.2`): `discover_research_contract`, `list_datasets` (empty — historical datasets are the future `/historical` scope), `get_run_status`, `get_run_result` are served read-only from the snapshot; `validate_module` / `submit_run` / `cancel_run` return `{ok:false, error}` with reason `backtesting_moved_to_trading_backtester` — **no backtesting is implemented or faked here**. stdout carries JSON-RPC only; all logs/audit go to stderr. Backtest/hypothesis execution belongs to the future `trading-backtester`.
