@@ -32,7 +32,14 @@ These are not suggestions — run each step at the trigger.
 trading-mock-platform mirrors the READ surfaces of the private trading-platform from sanitized snapshots.
 - It MUST NOT import private platform runtime/core/db/execution/exchange/config, nor require the private
   repo/package/GitHub auth at Docker build/run.
-- `src/contract/**` is import-clean and extractable (guard: `pnpm verify:contract-isolation`).
+- `src/contract/**` is import-clean and extractable, with ONE deliberate exception: the A3 SDK seam
+  `src/contract/ops-read/dto.sdk.ts` re-exports the live bot-results contract from `@trading-platform/sdk/ops-read`.
+  `pnpm verify:contract-isolation` machine-enforces that this is the *only* contract file importing the SDK —
+  `research-read/dto.ts` and the rest stay dependency-free and extractable.
+- A3 (feature 004): the live bot-results contract is OWNED by `@trading-platform/sdk` (subpath `/ops-read`),
+  consumed via a vendored tarball (`vendor/*.tgz`, no registry/auth) — this is NOT a private-platform-runtime
+  import. `pg`/`ccxt`/exchange SDKs and the private platform package stay forbidden (`verify:no-forbidden-deps`);
+  the tarball + its embedded `ops.3` are pinned by `verify:vendored-sdk`.
 - Two surfaces from one snapshot: Ops Read (office, HTTP/WS) and Research Read (lab, seam only here).
 - No backtesting is implemented or faked; backtest tools are `unavailable` (reason
   `backtesting_moved_to_trading_backtester`). Execution belongs to the future trading-backtester.

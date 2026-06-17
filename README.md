@@ -39,18 +39,29 @@ Read-only; sha256-hashed token allowlist; loopback by default; fail-closed if bo
 Snapshots are verified on load (manifest + checksums + version-compat + secret-scan). The exporter/sanitizer
 runs operator-side near the private platform and is out of scope here — see `docs/contracts/`.
 
+## Vendored SDK (`@trading-platform/sdk`)
+
+The live bot-results contract types come from `@trading-platform/sdk/ops-read`, vendored as
+`vendor/trading-platform-sdk-<version>.tgz` (a `file:` dependency — no registry/auth needed, offline-installable).
+The mock re-exports them through the single seam `src/contract/ops-read/dto.sdk.ts` (the only contract file
+allowed to import the SDK; `verify:contract-isolation` enforces this) — `research-read/dto.ts` stays SDK-free.
+To refresh it: in `trading-platform`, run `npm run build:sdk`, then `npm pack` in `packages/sdk` with
+`--pack-destination <mock>/vendor/`, bump the specifier in `package.json`, then `pnpm install` and run
+`pnpm check:ci` (the `verify:vendored-sdk` gate asserts the specifier shape and the embedded `ops.3`).
+
 ## CI guard
 
 Every PR to `main` (and every push to `main`) runs `.github/workflows/ci.yml` — two parallel jobs:
 
-- **checks:** `pnpm check` (typecheck + contract-isolation + tests) → `pnpm verify:no-forbidden-deps` → `pnpm verify:no-secrets`
+- **checks:** `pnpm check` (typecheck + contract-isolation + tests) → `pnpm verify:no-forbidden-deps` → `pnpm verify:no-secrets` → `pnpm verify:vendored-sdk`
 - **docker:** `docker build` (public deps only, no registry/private access)
 
 What it enforces, automatically:
 - types + tests (`pnpm check`)
 - `src/contract/**` import isolation
 - no secrets / forbidden patterns in committed data files (`.json`/`.parquet`/`.env`/… anywhere; `src`/`test`/`docs` and `.gitkeep` excluded)
-- no private/forbidden dependencies — runtime `dependencies` allowlist + a denylist (`trading-platform`, `pg`, `ccxt`, exchange SDKs) across the lockfile + a ban on `file:`/`link:`/`git+`/`workspace:` specifiers
+- no private/forbidden dependencies — runtime `dependencies` allowlist + a denylist (`trading-platform`, `pg`, `ccxt`, exchange SDKs, and every `@trading-platform/*` **except** the standalone `@trading-platform/sdk`) across the lockfile + a ban on `file:`/`link:`/`git+`/`workspace:` specifiers, with one carve-out: the vendored `./vendor/trading-platform-sdk-*.tgz` (A3, feature 004)
+- the vendored SDK tarball matches its `package.json` specifier and carries the expected `ops.3` (`verify:vendored-sdk`)
 - the image builds with public deps only
 
 Run all of it locally with `pnpm check:ci`.

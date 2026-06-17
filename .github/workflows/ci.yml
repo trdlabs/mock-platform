@@ -23,6 +23,7 @@ jobs:
       - run: pnpm check
       - run: pnpm verify:no-forbidden-deps
       - run: pnpm verify:no-secrets
+      - run: pnpm verify:vendored-sdk
 
   docker:
     runs-on: ubuntu-latest
