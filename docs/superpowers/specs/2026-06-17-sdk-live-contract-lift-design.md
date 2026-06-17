@@ -30,7 +30,9 @@ This is a **contract-first increment**: we lift only the already-existing live b
 ## 2. Six approved decisions
 
 1. **What we lift / which layer consumes it.** Lift the live bot-results **primitives** from `operations/dto.ts` into the SDK; switch the mock's **`ops-read/dto.ts`** to import them. `research-read/dto.ts` is untouched this feature.
-2. **SDK surface + version axis.** New dedicated subpath **`@trading-platform/sdk/ops-read`** (parallel to `/agent`), **types-only**, lifted via the existing `gen_sdk_snapshot` vendoring mechanism (SDK stays standalone — no platform import). Its **own** `OPS_READ_CONTRACT_VERSION` axis. Backtest `CONTRACT_VERSION='017.2'` is **not** touched. `SDK_CAPABILITIES.live` stays **`false`** (these are read-only result types, not live connectivity). A **new conformance fixture** pairs SDK ops-read ⇄ `operations/dto.ts`.
+2. **SDK surface + version axis.** New dedicated subpath **`@trading-platform/sdk/ops-read`** (parallel to `/agent`), **types-only**, **own-declared** in the SDK — hand-authored under `packages/sdk/src/ops-read/`, mirroring the feature-036 intake precedent (`PaperCandidateReadView`). Equivalence to `operations/dto.ts` is **machine-guaranteed** by a **new conformance fixture** (`Mutual<Sdk.X, Plat.X>` mutual-assignability, compiled against `dist/src/operations/dto.js` by a `tsc --noEmit` gate). The SDK stays standalone — the fixture lives **outside** `packages/sdk/src`, so it never leaks into the published surface, and **`gen_sdk_snapshot.mjs` is not touched** (its drift gate only confirms 'no drift'). Its **own** `OPS_READ_CONTRACT_VERSION` axis (value `'ops.3'`, matching the platform). Backtest `CONTRACT_VERSION='017.2'` is **not** touched. `SDK_CAPABILITIES.live` stays **`false`** (these are read-only result types, not live connectivity).
+
+   > **Mechanism note (refinement, 2026-06-17):** an earlier draft of this decision said "generated-vendored via `gen_sdk_snapshot`." Deeper cross-repo research showed `gen_sdk_snapshot` is a whitelist-copy engine purpose-built for the research contract (`017.x`) and that the closest precedent for a types-only SDK surface (036) hand-authors its DTOs and proves them via a conformance fixture. The mechanism was changed to **own-declared + conformance**; the invariant (SDK = source of truth, standalone, conformance-proven against `operations/dto.ts`, drift impossible) is preserved. "Duplicate types in the SDK" does not violate the feature goal — the goal is to remove *uncontrolled* drift, and the mutual-assignability gate makes drift CI-visible and impossible to merge.
 3. **Isolation / A3.** `src/contract/ops-read/dto.sdk.ts` re-exports the SDK ops-read core; `verify_contract_isolation` is narrowed (see §4) to permit exactly `@trading-platform/sdk` and **only** in that one file. This is the literal A3 statement: the contract layer sources its live primitives from the SDK. Future-flag: if the entire contract layer is ever extracted into a neutral `@trading/contracts` repo that must not depend on the SDK, revisit and move the re-export outside the contract layer.
 4. **Versioning.** SDK is source of truth for `OPS_READ_CONTRACT_VERSION`; the mock **imports** it from the SDK (stops declaring its own) and keeps the existing fail-closed **exact-match** check in `compat.ts`. The vendored tgz is **exact-version pinned** (filename + specifier); a new mock verify step asserts the vendored tgz matches the specifier and its embedded `OPS_READ_CONTRACT_VERSION` equals what the mock expects. tgz update = documented operator runbook. If the SDK value differs from the current `'ops.3'`, fixtures/manifests are realigned to the SDK value (explicit contract decision recorded in the plan).
 5. **Scope of the lift.** **Only** the bot-results core: `BotRunRecord`, `ClosedTrade`, `ClosedTradesAggregate`, `RunSummary`, `OperationalEvent`, `DecisionLogEntry` + the closed unions `BotMode`, `BotRunStatus`, `TradeSide`, `OpsSeverity`, `BotRunStrategyRef`. Health / coverage / discover / page-envelope types stay mock-local; their lift is a separate future fork.
@@ -42,17 +44,17 @@ This is a **contract-first increment**: we lift only the already-existing live b
 ## 3. Architecture (cross-repo)
 
 ```
-trading-platform                              trading-mock-platform
-  src/operations/dto.ts  ──(lift)──►   packages/sdk/src/ops-read/   ──npm pack──►   vendor/…sdk-<v>.tgz
-  (source of truth)        gen_sdk_      (new subpath, types-only,                        │
-                           snapshot      own OPS_READ_CONTRACT_VERSION)                   ▼
-  new conformance fixture:                                              src/contract/ops-read/dto.sdk.ts
-  SDK ops-read ⇄ operations/dto.ts                                       (re-export of SDK core; ONLY file
-                                                                          allowed to import the SDK)
-                                                                              │
-                                                       dto.ts (barrel) ◄──────┴────── dto.local.ts (health/coverage,
-                                                          │                              mock-local)
-                                          ~5 consumers (bundle.ts, handlers, readers) — import path unchanged
+trading-platform                                  trading-mock-platform
+  src/operations/dto.ts  ──(hand-author)──►  packages/sdk/src/ops-read/   ──npm pack──►  vendor/…sdk-0.3.0.tgz
+  (source of truth)                            (new subpath, types-only,                       │
+        ▲                                       own OPS_READ_CONTRACT_VERSION)                 ▼
+        │ Mutual<Sdk,Plat> conformance fixture                              src/contract/ops-read/dto.sdk.ts
+        └──  (conformance/ops-read-dto.conformance.ts,                       (re-export of SDK core; ONLY file
+              outside packages/sdk/src — proves equivalence)                  allowed to import the SDK)
+                                                                                 │
+                                                          dto.ts (barrel) ◄──────┴────── dto.local.ts (health/coverage,
+                                                             │                              mock-local)
+                                             ~5 consumers (bundle.ts, handlers, readers) — import path unchanged
 ```
 
 A3 framing: the mock's contract layer **points at the SDK** as the neutral home of platform contracts. `research-read/dto.ts` (mock-owned projection) stays clean and dependency-free, **machine-guaranteed** by the sub-directory-scoped isolation rule.
@@ -61,11 +63,11 @@ A3 framing: the mock's contract layer **points at the SDK** as the neutral home 
 
 ### 4.1 SDK side (`trading-platform`, step 1)
 
-- New export subpath `@trading-platform/sdk/ops-read`, **types-only**, carrying the bot-results core (decision 5) verbatim from `operations/dto.ts`.
-- Lifted via `gen_sdk_snapshot.mjs` (generated-vendored snapshot under the SDK's own `src/**`) so the SDK stays standalone.
-- `OPS_READ_CONTRACT_VERSION` lifted alongside the types as a distinct version axis. Backtest `CONTRACT_VERSION='017.2'` unchanged → `verify_032/034_zero_bump` and backtest conformance stay green.
+- New export subpath `@trading-platform/sdk/ops-read`, **types-only**, **hand-authored** under `packages/sdk/src/ops-read/{dto.ts,version.ts,index.ts}` with the bot-results core (decision 5) declared verbatim from `operations/dto.ts` (no platform import — the types are primitive/closed-union only).
+- **`gen_sdk_snapshot.mjs` is not touched** (mirrors the 036 intake precedent, which hand-authors its DTOs rather than vendoring them). The generator's drift gate (`gen:sdk-snapshot:check`) continues to confirm 'no drift' and stays green.
+- `OPS_READ_CONTRACT_VERSION = 'ops.3'` declared in `packages/sdk/src/ops-read/version.ts` as a distinct version axis. Backtest `CONTRACT_VERSION='017.2'` unchanged → `verify_032/034_zero_bump` (and the ops `verify_033/035_zero_bump`) stay green.
 - `SDK_CAPABILITIES.live` / `rawStorage` stay `false` → `verify_032/034_capability_absence` stay green.
-- New conformance fixture: mutual-assignability `SDK ops-read ⇄ operations/dto.ts` (analogous to the existing agent-dto conformance fixture, but paired against the ops source). Wired into the existing gate/check suite.
+- **New conformance fixture** `packages/sdk/conformance/ops-read-dto.conformance.ts` (+ `tsconfig.ops-read.json`): mutual-assignability `Mutual<Sdk.X, PlatOps.X>` for every lifted type, compiled `tsc --noEmit` against `dist/src/operations/dto.js` — the exact pattern of `paper-candidate.conformance.ts` (036). A new `verify_033_sdk_ops_read_conformance.mjs` (modeled on `verify_036_type_conformance.mjs`) runs it and is appended to the `gates:033` aggregate.
 
 ### 4.2 Mock side (`trading-mock-platform`, step 2)
 
@@ -118,9 +120,9 @@ No runtime data-flow change. The mock continues to load snapshots through the ex
 - Any backtesting (`backtesting_moved_to_trading_backtester`).
 - Any `pg` / `ccxt` / exchange / platform-runtime import in the mock; A3 is "the SDK owns platform contracts," **not** "a new standalone `@trading/contracts` monorepo."
 
-## 10. Plan-time lookups (resolved during planning — not placeholders)
+## 10. Plan-time lookups — RESOLVED during planning
 
-1. The value of the platform `OPS_READ_CONTRACT_VERSION` (`src/operations/version.ts`) → whether the mock's `'ops.3'` fixtures/manifests must realign.
-2. The private platform-runtime package name(s) → to narrow `DENYLIST` precisely (deny `@trading-platform/*` except `@trading-platform/sdk`).
-3. The SDK package version → tgz filename; the exact `exports` map and `gen_sdk_snapshot.mjs` mechanics for adding a new subpath.
-4. Confirm `RunSummary` in `operations/dto.ts` is the type consumed by the ops-read Surface A handlers, **not** a homonym (the lab exploration surfaced `getRunSummary` / `ResearchRunResult` — must not be confused with the ops `RunSummary`).
+1. **Platform `OPS_READ_CONTRACT_VERSION` = `'ops.3'`** (`src/operations/version.ts`) — **identical** to the mock's value. **No fixture/manifest realignment needed.**
+2. **`DENYLIST` narrowing:** the SDK package is `@trading-platform/sdk`; the private platform is the unscoped `trading-platform` repo/package. The guard keeps denying bare `trading-platform` and any `@trading-platform/*` **except** `@trading-platform/sdk` (rule expressed as: deny `@trading-platform` tokens unless immediately followed by `/sdk`). `pg`/`ccxt`/exchange SDKs stay denied unchanged.
+3. **SDK package version = `0.3.0`** → tarball `trading-platform-sdk-0.3.0.tgz`. The `exports` map gains a `"./ops-read"` entry. **Mechanism is own-declared + conformance** (see §4.1); `gen_sdk_snapshot.mjs` is untouched.
+4. **`RunSummary` confirmed distinct.** The ops `RunSummary` (interface `extends ClosedTradesAggregate`; fields `runId`/`excludesReconcile`/`asOf`) is consumed by the Surface A handler `src/operations/handlers/get-summary.ts::getSummary`. It is **not** the research `RunResultSummary` (different name, produced by `buildRunSummary` in the gateway worker), and `getRunSummary` / `ResearchRunResult` do not exist in `trading-platform` proper. The conformance fixture pairs `Mutual<Sdk.RunSummary, PlatOps.RunSummary>` against `dist/src/operations/dto.js` only.
