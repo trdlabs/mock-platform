@@ -14,6 +14,11 @@ describe('verify_vendored_sdk: checkSpecifier', () => {
       .some((e) => e.includes('not a vendored'))).toBe(true);
   });
 
+  it('rejects a file: path not under ./vendor/', () => {
+    expect(checkSpecifier({ dependencies: { '@trading-platform/sdk': 'file:./node_modules/trading-platform-sdk-0.3.0.tgz' } })
+      .some((e) => e.includes('not a vendored'))).toBe(true);
+  });
+
   it('rejects a missing dependency', () => {
     expect(checkSpecifier({ dependencies: {} }).some((e) => e.includes('missing from dependencies'))).toBe(true);
   });

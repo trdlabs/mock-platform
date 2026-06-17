@@ -9,13 +9,14 @@ const SPEC_RE = /^file:(\.\/vendor\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz)$/;
 
 interface PkgJson { dependencies?: Record<string, string> }
 
-/** Pure (no SDK import): returns a list of specifier problems ([] = clean). Safe for unit tests. */
+/** No SDK import; returns specifier problems ([] = clean). Touches the filesystem only to check
+ *  tarball existence — safe to unit-test for specifier-shape errors. */
 export function checkSpecifier(pkg: PkgJson): string[] {
   const errs: string[] = [];
   const spec = pkg.dependencies?.['@trading-platform/sdk'];
   if (!spec) { errs.push('@trading-platform/sdk missing from dependencies'); return errs; }
   const m = SPEC_RE.exec(spec);
-  if (!m) { errs.push(`@trading-platform/sdk specifier '${spec}' is not a vendored ./vendor/*.tgz file:`); return errs; }
+  if (!m) { errs.push(`@trading-platform/sdk specifier '${spec}' is not a vendored ./vendor/*.tgz file`); return errs; }
   const tarball = m[1] as string; // capture group 1 is always defined when SPEC_RE matches
   if (!existsSync(tarball)) errs.push(`vendored tarball ${tarball} does not exist`);
   return errs;
