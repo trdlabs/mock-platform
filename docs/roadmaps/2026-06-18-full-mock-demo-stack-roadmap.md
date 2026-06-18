@@ -120,7 +120,7 @@ Teach `trading-backtester` to fetch historical inputs from `trading-mock-platfor
 
 `trading-backtester` can execute real sandbox backtests on historical data served by `trading-mock-platform`.
 
-## Phase 010 — Wire `trading-lab` to the Mock-Backed Backtester
+## Phase 010 — Wire `trading-lab` to the Mock-Backed Backtester ✅ DONE 2026-06-18
 
 ### Goal
 
