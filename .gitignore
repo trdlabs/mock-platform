@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.env
 *.log
 # real sanitized snapshots are mounted at runtime, never committed
 /data/snapshots/*
