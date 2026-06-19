@@ -47,11 +47,12 @@ import type { ChildProcess } from 'node:child_process';
 // Типы (повторяем нужные минимальные формы контрактов)
 // ──────────────────────────────────────────────────
 
+interface StrategyRef { name: string; version: string; }
 interface BotRun {
   runId: string;
   mode: string;
   status: string;
-  strategy: string;
+  strategy: StrategyRef;
   startedAtMs: number;
   finishedAtMs: number | null;
   lastSeenMs: number;
@@ -82,7 +83,7 @@ interface OpsEvent {
 
 interface DecisionEntry {
   category: string;
-  runId?: string;
+  runId: string;
   botId: string;
   symbol: string;
   side: string;
@@ -348,7 +349,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
       runId: r.runId,
       mode: r.mode,
       status: r.status === 'crashed' || r.status === 'aborted' ? 'finished' : r.status,
-      strategy: r.strategy ?? 'unknown',
+      strategy: { name: r.strategy ?? 'unknown', version: 'unknown' },
       startedAtMs: Number(r.startedAtMs),
       finishedAtMs: r.finishedAtMs !== null ? Number(r.finishedAtMs) : null,
       lastSeenMs: Number(r.lastSeenMs),
@@ -402,7 +403,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
           openedAtMs: Number(t.openedAtMs),
           closedAtMs: Number(t.closedAtMs),
           realizedPnl: t.realizedPnl ?? '0',
-          pnlPct: t.pnlPct ?? null,
+          pnlPct: t.pnlPct ?? '0',
           isWin: t.isWin ?? null,
           closeReason: t.closeReason ?? null,
         });
@@ -470,6 +471,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
       const rid = d.runId;
       if (rid in decisionsByRun) {
         decisionsByRun[rid]!.push({
+          runId: rid,
           category: d.category,
           botId: d.botId,
           symbol: d.symbol,
@@ -492,17 +494,34 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
 // rsync Parquet
 // ──────────────────────────────────────────────────
 
-function rsyncParquet(cfg: Cfg): void {
+function datesInPeriod(tsFrom: number, tsTo: number): string[] {
+  const dates: string[] = [];
+  const dayMs = 86_400_000;
+  for (let t = Math.floor(tsFrom / dayMs) * dayMs; t < tsTo; t += dayMs) {
+    dates.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function rsyncParquet(cfg: Cfg, tsFrom: number, tsTo: number): void {
   mkdirSync(cfg.parquetLocal, { recursive: true });
-  const sshOpt = `ssh -i ${cfg.sshKey} -p ${cfg.sshPort} -o StrictHostKeyChecking=no`;
-  const args = [
-    '-avz', '--progress',
-    '--include=*/', '--include=*.parquet', '--exclude=*',
-    `--rsh=${sshOpt}`,
-    `${cfg.vps!}:${cfg.parquetRoot}/`,
-    `${cfg.parquetLocal}/`,
-  ];
-  console.log(`[rsync] Syncing parquet from ${cfg.vps}:${cfg.parquetRoot}…`);
+  const keyPath = cfg.sshKey.startsWith('~')
+    ? join(process.env['HOME'] ?? '', cfg.sshKey.slice(1))
+    : cfg.sshKey;
+  const sshBase = existsSync(keyPath)
+    ? `ssh -i ${keyPath} -p ${cfg.sshPort} -o StrictHostKeyChecking=no`
+    : `ssh -p ${cfg.sshPort} -o StrictHostKeyChecking=no`;
+  const dates = datesInPeriod(tsFrom, tsTo);
+  const args = ['-avz', '--progress'];
+  for (const sv of ['schema_version=1', 'schema_version=2']) {
+    args.push(`--include=${sv}/`);
+    for (const d of dates) {
+      args.push(`--include=${sv}/date=${d}/`);
+      args.push(`--include=${sv}/date=${d}/**`);
+    }
+  }
+  args.push('--exclude=*', `--rsh=${sshBase}`, `${cfg.vps!}:${cfg.parquetRoot}/`, `${cfg.parquetLocal}/`);
+  console.log(`[rsync] Syncing parquet [${dates[0]}..${dates.at(-1)}] (${dates.length} day(s))…`);
   const result = spawnSync('rsync', args, { stdio: 'inherit' });
   if (result.status !== 0 && result.status !== 24) {
     throw new Error(`rsync failed (exit ${result.status ?? 'null'})`);
@@ -678,7 +697,7 @@ function stubHealthFields(): Record<string, unknown> {
   return {
     runtimeHealth: { entries: [], asOf: NOW_MS },
     marketHealth: {
-      status: 'ok', diagnostics: [], streamAgeMs: 0,
+      status: 'ok', diagnostics: {}, streamAgeMs: 0,
       availability: 'available', asOf: NOW_MS,
     },
     executionHealth: {
@@ -708,7 +727,7 @@ function buildAnalysisByRun(
       freshness: 'fresh',
       identity: {
         mode: run.mode,
-        strategy: { name: run.strategy, version: 'unknown' },
+        strategy: { name: run.strategy.name, version: run.strategy.version },
         symbols: run.symbols,
       },
       period: { fromMs: tsFrom, toMs: tsTo },
@@ -750,14 +769,25 @@ function buildResearchByRun(
     const pnl = trades.reduce((s, t) => s + parseFloat(t.realizedPnl || '0'), 0);
     result[run.runId] = {
       summary: {
-        runId: run.runId, mode: run.mode, strategy: run.strategy,
-        period: { fromMs: run.startedAtMs, toMs: run.finishedAtMs ?? NOW_MS },
-        closedTrades: trades.length, wins, losses: trades.length - wins,
-        pnlUsd: pnl,
-        winratePct: trades.length > 0 ? (wins * 100) / trades.length : 0,
+        runRef: run.runId,
+        mode: run.mode,
+        asOf: NOW_MS,
+        metrics: {
+          netPnlUsd: pnl.toFixed(8),
+          winRate: trades.length > 0 ? wins / trades.length : 0,
+          maxDrawdownPct: '0.00000000',
+          sharpe: { available: false, reason: 'not_computed' },
+          totalTrades: trades.length,
+        },
       },
-      trades,
-      decisions,
+      trades: trades.map((t) => ({
+        tradeId: t.tradeId, symbol: t.symbol, side: t.side,
+        openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs,
+        realizedPnl: t.realizedPnl,
+      })),
+      decisions: decisions.map((d) => ({
+        category: d.category, symbol: d.symbol, reason: d.reason, tsMs: d.tsMs,
+      })),
       analysisContext: 'fetched from VPS',
     };
   }
@@ -979,7 +1009,7 @@ async function main(): Promise<void> {
   if (!cfg.noParquet && cfg.parquetRoot && symbols.length > 0) {
     let parquetLocal = cfg.parquetRoot;
     if (!cfg.noTunnel && cfg.vps) {
-      rsyncParquet(cfg);
+      rsyncParquet(cfg, tsFrom, tsTo);
       parquetLocal = cfg.parquetLocal;
     }
     historical = await readParquetDir(parquetLocal, symbols, tsFrom, tsTo);
