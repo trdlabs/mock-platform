@@ -29,6 +29,9 @@ describe('selectTopSymbols', () => {
   it('ranks by trade count, tie-broken by symbol name asc', () => {
     expect(selectTopSymbols(structuredClone(sample), 2)).toEqual(['A', 'B']);
   });
+  it('returns all symbols (count desc, then name asc) when n exceeds the distinct count', () => {
+    expect(selectTopSymbols(structuredClone(sample), 10)).toEqual(['A', 'B', 'C', 'D']);
+  });
 });
 
 describe('filterBundleToSymbols', () => {

@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { sha256Hex } from '../src/snapshot/checksums.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 import { scanText } from '../src/safety/secret-scan.js';
+import type { SnapshotManifest } from '../src/contract/snapshot/manifest.js';
 
 interface RawHistorical {
   barsBySymbolAndTimeframe: Record<string, Record<string, unknown[]>>;
@@ -136,16 +137,10 @@ export function filterBundleToSymbols<B extends BundleLike>(bundle: B, symbols: 
     ...bundle,
     runs: [...bundle.runs].filter((r) => retained.has(runIdOf(r))),
     tradesByRun,
-    eventsByRun: pickKeys(
-      Object.fromEntries(Object.entries(bundle.eventsByRun).map(([k, v]) => [k, [...v]])),
-      retained,
-    ),
-    decisionsByRun: pickKeys(
-      Object.fromEntries(Object.entries(bundle.decisionsByRun).map(([k, v]) => [k, [...v]])),
-      retained,
-    ),
-    analysisByRun: pickKeys(bundle.analysisByRun as Record<string, unknown>, retained),
-    researchByRun: pickKeys(bundle.researchByRun as Record<string, unknown>, retained),
+    eventsByRun: pickKeys(bundle.eventsByRun, retained),
+    decisionsByRun: pickKeys(bundle.decisionsByRun, retained),
+    analysisByRun: pickKeys(bundle.analysisByRun, retained),
+    researchByRun: pickKeys(bundle.researchByRun, retained),
     ...(historical !== undefined ? { historical } : {}),
   } as unknown as B;
 }
@@ -176,11 +171,12 @@ function main(): void {
     throw new Error(`secret-scan tripped on fixture bundle: ${hits.join(', ')} — narrow symbols or redact source`);
   }
 
-  const ref = out.split('/').filter(Boolean).slice(-1)[0] as string;
-  const manifest = {
+  const ref = out.split('/').filter(Boolean).slice(-1)[0];
+  if (!ref) throw new Error(`could not derive a snapshot ref from --out '${out}'`);
+  const manifest: SnapshotManifest = {
     ref,
     createdAtMs: Date.now(),
-    versions: { ...srcManifest.versions, exporterVersion: 'fixture-trim.1' },
+    versions: { ...srcManifest.versions, exporterVersion: 'fixture-trim.1' } as SnapshotManifest['versions'],
     bundleRef: 'ops/bundle.json',
     checksumsRef: 'checksums.json',
   };
