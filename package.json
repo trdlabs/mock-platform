@@ -20,7 +20,7 @@
     "start": "node dist/src/bin/start-mock-ops.js",
     "start:research-mcp": "node dist/src/bin/start-research-mcp.js",
     "dev": "tsx src/bin/start-mock-ops.ts",
-    "fetch:snapshot": "tsx scripts/fetch-snapshot.ts"
+    "fetch:snapshot": "tsx tools/fetch-snapshot/fetch-snapshot.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
@@ -32,9 +32,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.20.0",
-    "hyparquet": "^1.26.0",
-    "pg": "^8.21.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"

@@ -1,0 +1,4 @@
+# Standalone project root for the fetch-snapshot tool (isolated from the repo's
+# pnpm workspace so its pg/hyparquet deps never reach the root pnpm-lock.yaml).
+allowBuilds:
+  esbuild: true

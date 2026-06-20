@@ -1,0 +1,21 @@
+{
+  "name": "fetch-snapshot-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone VPS → mock-platform snapshot ingestion tool. Deliberately kept OUT of the trading-mock-platform package so its pg/hyparquet deps never reach the repo's pnpm-lock.yaml (verify:no-forbidden-deps forbids pg/exchange/db deps in the read-only mock surface).",
+  "scripts": {
+    "start": "tsx fetch-snapshot.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hyparquet": "^1.26.0",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
