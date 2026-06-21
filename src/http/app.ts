@@ -18,6 +18,7 @@ import { handleAnalysis } from '../ops/handlers/analysis.js';
 import { startReplay } from '../events/ws-adapter.js';
 import { buildHistoricalDiscover } from '../historical/handlers/discover.js';
 import { handleBars } from '../historical/handlers/bars.js';
+import { handleRows } from '../historical/handlers/rows.js';
 import { handleFunding } from '../historical/handlers/funding.js';
 import { handleOpenInterest } from '../historical/handlers/openInterest.js';
 import { handleLiquidations } from '../historical/handlers/liquidations.js';
@@ -101,6 +102,19 @@ export function createApp(deps: AppDeps) {
     const base = histParams(c);
     const timeframe = c.req.query('timeframe');
     return respond(c, handleBars(bundle, { ...base, ...(timeframe !== undefined ? { timeframe } : {}) }, now(), c.req.query('cursor')));
+  });
+  // symbols is CSV (plural) — distinct from the singular `symbol` of the other historical endpoints.
+  app.get('/historical/rows', (c) => {
+    const symbols = (c.req.query('symbols') ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    const fromMs = toNum(c.req.query('fromMs'));
+    const toMs = toNum(c.req.query('toMs'));
+    const limit = toNum(c.req.query('limit'));
+    return respond(c, handleRows(bundle, {
+      symbols,
+      ...(fromMs !== undefined ? { fromMs } : {}),
+      ...(toMs !== undefined ? { toMs } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    }, now(), c.req.query('cursor')));
   });
   app.get('/historical/funding', (c) => respond(c, handleFunding(bundle, histParams(c), now(), c.req.query('cursor'))));
   app.get('/historical/open-interest', (c) => respond(c, handleOpenInterest(bundle, histParams(c), now(), c.req.query('cursor'))));
