@@ -7,3 +7,6 @@ dist/
 !/data/snapshots/.gitkeep
 !/data/snapshots/fixtures/
 !/data/snapshots/fixtures/**
+
+# Local git worktrees (isolation; never tracked)
+.worktrees/
