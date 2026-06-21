@@ -9,6 +9,8 @@ without the private live platform, exchanges, credentials, prod DB, or VPS.
   plus Tier-2 `/ops/runs/:id/analysis` (`ops.4`, capability-aware).
 - **Surface B — Research Read** (consumer: trading-lab): contract + snapshot→DTO adapter + read-only
   capability descriptor. Transport (MCP/HTTP) is a future increment — this feature ships the seam only.
+- **Surface C — Historical Read** (`/historical/rows`): HTTP GET serving full `CanonicalRowV2` pages
+  (`historical.2`), proven byte-identical to the real platform via a shared conformance harness.
 
 It does NOT execute or simulate trading or backtesting, hold credentials, reach an exchange/prod DB, or
 ingest live data. Backtest/hypothesis execution belongs to the future separate `trading-backtester`.
@@ -68,6 +70,22 @@ Run all of it locally with `pnpm check:ci`.
 
 **Manual operator step (one-time):** enable branch protection on `main` requiring the **`checks`** and **`docker`** status checks before merge (GitHub → Settings → Branches → Branch protection rules). CI cannot set this itself.
 
+## Surface C — Historical Read (`/historical/rows`, full canonical rows)
+
+`GET /historical/rows?symbols=<csv>&fromMs=&toMs=&limit=&cursor=` → `PageEnvelope<CanonicalRowV2>`.
+Each item is a **full canonical row** (contract `historical.2`): OHLCV + turnover, open interest, funding,
+liquidations, and the taker triplet. `symbols` is a comma-separated list; `fromMs`/`toMs` bound the window
+(`toMs` optional → open-ended); `limit` + opaque `cursor` page the result (unknown symbols yield an empty
+page, not an error). This is additive — the older bars-keyed endpoints stay as they were.
+
+**Golden fixture.** `data/snapshots/fixtures/historical-golden` is a deterministic snapshot covering all
+canonical kinds, generated from the platform `MANIFEST` by `scripts/make-golden-fixture.ts`.
+
+**Conformance (mock == real).** The shared conformance harness is vendored under
+`test/conformance/_vendored/` and kept in lockstep with the upstream copy by `verify:harness-sync` (wired
+into `check:ci`). Running it against this mock and against the real platform over the golden fixture proves
+**byte-identity** (30 rows) — the mock's `/historical/rows` response is indistinguishable from the real one.
+
 ## Surface B — Research Read (trading-lab, stdio MCP gateway)
 
 `trading-lab` reads the mock through its current MCP-over-stdio path — point it at the gateway with env only, no lab code change:
@@ -80,4 +98,4 @@ TRADING_PLATFORM_GATEWAY_ARGS=run -i --rm -e MOCK_SNAPSHOT_REF=fixtures/2026-06-
 #   pass MOCK_RESEARCH_TOKENS (expected) into the container and MOCK_RESEARCH_TOKEN (raw) via the spawn env
 ```
 
-The gateway speaks the MCP-031 contract (`017.2`): `discover_research_contract`, `list_datasets` (empty — historical datasets are the future `/historical` scope), `get_run_status`, `get_run_result` are served read-only from the snapshot; `validate_module` / `submit_run` / `cancel_run` return `{ok:false, error}` with reason `backtesting_moved_to_trading_backtester` — **no backtesting is implemented or faked here**. stdout carries JSON-RPC only; all logs/audit go to stderr. Backtest/hypothesis execution belongs to the future `trading-backtester`.
+The gateway speaks the MCP-031 contract (`017.2`): `discover_research_contract`, `list_datasets` (empty — historical canonical rows are served over HTTP via the `/historical/rows` surface below), `get_run_status`, `get_run_result` are served read-only from the snapshot; `validate_module` / `submit_run` / `cancel_run` return `{ok:false, error}` with reason `backtesting_moved_to_trading_backtester` — **no backtesting is implemented or faked here**. stdout carries JSON-RPC only; all logs/audit go to stderr. Backtest/hypothesis execution belongs to the future `trading-backtester`.
