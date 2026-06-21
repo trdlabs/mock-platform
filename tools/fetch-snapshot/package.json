@@ -6,7 +6,8 @@
   "description": "Standalone VPS → mock-platform snapshot ingestion tool. Deliberately kept OUT of the trading-mock-platform package so its pg/hyparquet deps never reach the repo's pnpm-lock.yaml (verify:no-forbidden-deps forbids pg/exchange/db deps in the read-only mock surface).",
   "scripts": {
     "start": "tsx fetch-snapshot.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "hyparquet": "^1.26.0",
@@ -16,6 +17,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8.20.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }

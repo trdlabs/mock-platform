@@ -40,7 +40,7 @@ import * as fsp from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
 // ──────────────────────────────────────────────────
@@ -109,8 +109,8 @@ interface Bar {
 }
 
 interface FundingEntry { tsMs: number; symbol: string; rate: number; }
-interface OIEntry { tsMs: number; symbol: string; oiUsd: number; }
-interface LiqEntry { tsMs: number; symbol: string; longUsd: number; shortUsd: number; }
+interface OIEntry { tsMs: number; symbol: string; openInterestUsd: number; }
+interface LiqEntry { tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number; }
 
 interface HistoricalBundle {
   barsBySymbolAndTimeframe: Record<string, Record<string, Bar[]>>;
@@ -533,7 +533,7 @@ function rsyncParquet(cfg: Cfg, tsFrom: number, tsTo: number): void {
 // Parquet читалка (hyparquet)
 // ──────────────────────────────────────────────────
 
-interface MinuteRow {
+export interface MinuteRow {
   ts: number;
   sym: string;
   open: number;
@@ -629,7 +629,7 @@ const TF_MS: Record<string, number> = {
   '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
 };
 
-function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): HistoricalBundle {
+export function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): HistoricalBundle {
   const TIMEFRAMES = ['1h', '1d'];
   const barsBySymbolAndTimeframe: Record<string, Record<string, Bar[]>> = {};
   const fundingBySymbol: Record<string, FundingEntry[]> = {};
@@ -668,18 +668,23 @@ function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): HistoricalB
     // OI — дедуп по tsMs
     const oiMap = new Map<number, OIEntry>();
     for (const r of rows) {
-      if (r.oi !== null) oiMap.set(r.ts, { tsMs: r.ts, symbol: sym, oiUsd: r.oi });
+      if (r.oi !== null) oiMap.set(r.ts, { tsMs: r.ts, symbol: sym, openInterestUsd: r.oi });
     }
     openInterestBySymbol[sym] = [...oiMap.values()].sort((a, b) => a.tsMs - b.tsMs);
 
-    // Liquidations — дедуп по tsMs
-    const liqMap = new Map<number, LiqEntry>();
+    // Liquidations — дедуп по tsMs, затем разворот в контрактные per-side ряды (нулевые стороны опускаем)
+    const liqByTs = new Map<number, { long: number; short: number }>();
     for (const r of rows) {
       if (r.liqLong !== null || r.liqShort !== null) {
-        liqMap.set(r.ts, { tsMs: r.ts, symbol: sym, longUsd: r.liqLong ?? 0, shortUsd: r.liqShort ?? 0 });
+        liqByTs.set(r.ts, { long: r.liqLong ?? 0, short: r.liqShort ?? 0 });
       }
     }
-    liquidationsBySymbol[sym] = [...liqMap.values()].sort((a, b) => a.tsMs - b.tsMs);
+    const liqEntries: LiqEntry[] = [];
+    for (const [ts, sides] of [...liqByTs.entries()].sort((a, b) => a[0] - b[0])) {
+      if (sides.long > 0) liqEntries.push({ tsMs: ts, symbol: sym, side: 'long', sizeUsd: sides.long });
+      if (sides.short > 0) liqEntries.push({ tsMs: ts, symbol: sym, side: 'short', sizeUsd: sides.short });
+    }
+    liquidationsBySymbol[sym] = liqEntries;
   }
 
   return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol };
@@ -871,12 +876,20 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
         mh.barsBySymbolAndTimeframe[sym]![tf] = [...byTs.values()].sort((a, b) => a.tsMs - b.tsMs);
       }
     }
+    const tsKey = (e: { tsMs: number; side?: string }): string => String(e.tsMs);
+    const liqKey = (e: { tsMs: number; side?: string }): string => `${e.tsMs}:${e.side ?? ''}`;
+    const keyForField: Record<string, (e: { tsMs: number; side?: string }) => string> = {
+      fundingBySymbol: tsKey, openInterestBySymbol: tsKey, liquidationsBySymbol: liqKey,
+    };
     for (const field of ['fundingBySymbol', 'openInterestBySymbol', 'liquidationsBySymbol'] as const) {
+      const key = keyForField[field]!;
       for (const [sym, entries] of Object.entries(newHist[field])) {
-        const old = (mh[field][sym] as { tsMs: number }[]) ?? [];
-        const byTs = new Map(old.map((e) => [e.tsMs, e]));
-        for (const e of entries as { tsMs: number }[]) byTs.set(e.tsMs, e);
-        (mh[field] as Record<string, unknown[]>)[sym] = [...byTs.values()].sort((a, b) => (a as { tsMs: number }).tsMs - (b as { tsMs: number }).tsMs);
+        const old = (mh[field][sym] as { tsMs: number; side?: string }[]) ?? [];
+        const byKey = new Map(old.map((e) => [key(e), e]));
+        for (const e of entries as { tsMs: number; side?: string }[]) byKey.set(key(e), e);
+        (mh[field] as Record<string, unknown[]>)[sym] = [...byKey.values()].sort(
+          (a, b) => (a.tsMs - b.tsMs) || String(a.side ?? '').localeCompare(String(b.side ?? '')),
+        );
       }
     }
     merged['historical'] = mh;
@@ -1029,7 +1042,9 @@ async function main(): Promise<void> {
   writeSnapshot(cfg.ref, bundle, cfg.dryRun);
 }
 
-main().catch((e) => {
-  console.error('[fatal]', e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error('[fatal]', e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
+}
