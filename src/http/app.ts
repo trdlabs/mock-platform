@@ -17,11 +17,7 @@ import { handleCoverage } from '../ops/handlers/coverage.js';
 import { handleAnalysis } from '../ops/handlers/analysis.js';
 import { startReplay } from '../events/ws-adapter.js';
 import { buildHistoricalDiscover } from '../historical/handlers/discover.js';
-import { handleBars } from '../historical/handlers/bars.js';
 import { handleRows } from '../historical/handlers/rows.js';
-import { handleFunding } from '../historical/handlers/funding.js';
-import { handleOpenInterest } from '../historical/handlers/openInterest.js';
-import { handleLiquidations } from '../historical/handlers/liquidations.js';
 import { handleHistoricalCoverage } from '../historical/handlers/coverage.js';
 
 export interface AppDeps {
@@ -86,24 +82,9 @@ export function createApp(deps: AppDeps) {
   // --- Historical Read surface (/historical/*) — no auth required (read-only, sanitized snapshots) ---
 
   const toNum = (v: string | undefined): number | undefined => (v !== undefined ? Number(v) : undefined);
-  const histParams = (c: Context) => {
-    const symbol = c.req.query('symbol');
-    const fromMs = toNum(c.req.query('fromMs'));
-    const toMs = toNum(c.req.query('toMs'));
-    return {
-      ...(symbol !== undefined ? { symbol } : {}),
-      ...(fromMs !== undefined ? { fromMs } : {}),
-      ...(toMs !== undefined ? { toMs } : {}),
-    };
-  };
 
   app.get('/historical/discover', (c) => c.json(buildHistoricalDiscover(bundle), 200));
-  app.get('/historical/bars', (c) => {
-    const base = histParams(c);
-    const timeframe = c.req.query('timeframe');
-    return respond(c, handleBars(bundle, { ...base, ...(timeframe !== undefined ? { timeframe } : {}) }, now(), c.req.query('cursor')));
-  });
-  // symbols is CSV (plural) — distinct from the singular `symbol` of the other historical endpoints.
+  // symbols is CSV (plural).
   app.get('/historical/rows', (c) => {
     const symbols = (c.req.query('symbols') ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     const fromMs = toNum(c.req.query('fromMs'));
@@ -116,9 +97,6 @@ export function createApp(deps: AppDeps) {
       ...(limit !== undefined ? { limit } : {}),
     }, now(), c.req.query('cursor')));
   });
-  app.get('/historical/funding', (c) => respond(c, handleFunding(bundle, histParams(c), now(), c.req.query('cursor'))));
-  app.get('/historical/open-interest', (c) => respond(c, handleOpenInterest(bundle, histParams(c), now(), c.req.query('cursor'))));
-  app.get('/historical/liquidations', (c) => respond(c, handleLiquidations(bundle, histParams(c), now(), c.req.query('cursor'))));
   app.get('/historical/coverage', (c) => c.json(handleHistoricalCoverage(bundle, now()), 200));
 
   // WS replay shares the /ops/events path (GET → list; upgrade → stream). Read-only: inbound ignored.
