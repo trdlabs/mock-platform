@@ -31,10 +31,12 @@ describe('buildHistoricalDiscover', () => {
     expect(rows.availability).toBe('unavailable');
   });
 
-  it('keeps the 5 pre-existing resources', () => {
+  it('exposes only rows and historical-coverage (legacy resources retired)', () => {
     const names = buildHistoricalDiscover(withHistorical).resources.map((r) => r.name);
-    for (const n of ['bars', 'funding', 'open-interest', 'liquidations', 'historical-coverage']) {
-      expect(names).toContain(n);
+    expect(names).toContain('rows');
+    expect(names).toContain('historical-coverage');
+    for (const n of ['bars', 'funding', 'open-interest', 'liquidations']) {
+      expect(names).not.toContain(n);
     }
   });
 });
