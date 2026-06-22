@@ -18,8 +18,8 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@trading-platform/sdk':
-        specifier: file:./vendor/trading-platform-sdk-0.3.0.tgz
-        version: file:vendor/trading-platform-sdk-0.3.0.tgz(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
+        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz
+        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -500,14 +500,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@trading-platform/sdk@file:vendor/trading-platform-sdk-0.3.0.tgz':
-    resolution: {integrity: sha512-+xLOB5Dt22I1ZfufXW3IjdPW9kOlkqPTP8dd3dn/mJp2b/mQHbOWqCBWh3xM+VFm7QqsPDMZASgdKPGWF03t1A==, tarball: file:vendor/trading-platform-sdk-0.3.0.tgz}
-    version: 0.3.0
-    peerDependencies:
-      '@modelcontextprotocol/sdk': ^1.29.0
-    peerDependenciesMeta:
-      '@modelcontextprotocol/sdk':
-        optional: true
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz':
+    resolution: {integrity: sha512-X8tfAEZ2zxnDUxvsg3auPH8wSMTTFAXRlf/s0l9Flck0oWYCRq57q6tz1HxU41Ole6z4as+Xti/OgLF6VjVvFA==, tarball: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz}
+    version: 0.4.0
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1359,11 +1354,9 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.0':
     optional: true
 
-  '@trading-platform/sdk@file:vendor/trading-platform-sdk-0.3.0.tgz(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))':
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.4.0/trading-platform-sdk-0.4.0.tgz':
     dependencies:
       decimal.js: 10.6.0
-    optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
 
   '@types/estree@1.0.9': {}
 
