@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 
 // Clarification #1: allowlist is checked against DIRECT dependencies only; denylist scans the whole lockfile.
-// A3 (feature 004): @trading-platform/sdk is admitted as a vendored standalone tarball ONLY.
+// A3 (feature 004): @trading-platform/sdk is admitted as a standalone tarball ONLY — now sourced from a
+// public GitHub release asset (https URL) rather than a vendored ./vendor/*.tgz file.
 const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk', '@trading-platform/sdk']);
 // bare denylist tokens — the private platform runtime, db, and exchange SDKs.
 // NOTE: '@trading-platform' is intentionally NOT a bare token: the @trading-platform scope is policed
@@ -12,10 +13,12 @@ const DENYLIST = [
   'pg', 'ccxt',
   'binance-api-node', 'node-binance-api', 'bybit-api', 'okx-api',
 ];
-const NON_REGISTRY = /^(?:file:|link:|git\+|git:|github:|workspace:)/;
-// The single permitted non-registry specifier: the vendored SDK tarball.
+// Non-registry specifier forms that are banned outright. https remote tarballs are also non-registry,
+// so they are policed explicitly below (the SDK release-asset URL is the sole permitted https tarball).
+const NON_REGISTRY = /^(?:file:|link:|git\+|git:|github:|workspace:|https?:)/;
+// The single permitted non-registry specifier: the SDK GitHub release-asset tarball URL.
 const VENDORED_SDK_NAME = '@trading-platform/sdk';
-const VENDORED_SDK_SPEC = /^file:\.\/vendor\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz$/;
+const VENDORED_SDK_SPEC = /^https:\/\/github\.com\/.+\/releases\/download\/sdk-v\d+\.\d+\.\d+\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz$/;
 
 const violations = [];
 

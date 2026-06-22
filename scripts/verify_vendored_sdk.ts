@@ -1,31 +1,29 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 // The ops-read contract version the mock's fixtures + compat gate pin. The SDK is the source of truth;
-// this constant is the value we REQUIRE the vendored SDK to carry (drift = hard fail).
+// this constant is the value we REQUIRE the release SDK to carry (drift = hard fail).
 const EXPECTED_OPS_VERSION = 'ops.3';
-const SPEC_RE = /^file:(\.\/vendor\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz)$/;
+// The SDK is consumed as a public GitHub release-asset tarball (no longer vendored locally).
+const SPEC_RE = /^https:\/\/github\.com\/.+\/releases\/download\/sdk-v\d+\.\d+\.\d+\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz$/;
 
 interface PkgJson { dependencies?: Record<string, string> }
 
-/** No SDK import; returns specifier problems ([] = clean). Touches the filesystem only to check
- *  tarball existence — safe to unit-test for specifier-shape errors. */
+/** No SDK import; returns specifier problems ([] = clean). Pure shape check on the dep spec —
+ *  safe to unit-test for specifier-shape errors. */
 export function checkSpecifier(pkg: PkgJson): string[] {
   const errs: string[] = [];
   const spec = pkg.dependencies?.['@trading-platform/sdk'];
   if (!spec) { errs.push('@trading-platform/sdk missing from dependencies'); return errs; }
-  const m = SPEC_RE.exec(spec);
-  if (!m) { errs.push(`@trading-platform/sdk specifier '${spec}' is not a vendored ./vendor/*.tgz file`); return errs; }
-  const tarball = m[1] as string; // capture group 1 is always defined when SPEC_RE matches
-  if (!existsSync(tarball)) errs.push(`vendored tarball ${tarball} does not exist`);
+  if (!SPEC_RE.test(spec)) { errs.push(`@trading-platform/sdk specifier '${spec}' is not a GitHub release-asset tgz URL`); return errs; }
   return errs;
 }
 
 async function main(): Promise<void> {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as PkgJson;
 
-  // 1. Validate the specifier + tarball FIRST. The SDK is imported only after this passes, so an
+  // 1. Validate the specifier FIRST. The SDK is imported only after this passes, so an
   //    unresolved/missing SDK surfaces here as a clear message — not a cryptic module-resolution throw.
   const errs = checkSpecifier(pkg);
   if (errs.length) {
@@ -38,7 +36,7 @@ async function main(): Promise<void> {
   try {
     ({ OPS_READ_CONTRACT_VERSION: version } = await import('@trading-platform/sdk/ops-read'));
   } catch (e) {
-    console.error(`vendored-sdk check failed:\n  - cannot import '@trading-platform/sdk/ops-read' (is it installed from the vendored tgz?): ${(e as Error).message}`);
+    console.error(`vendored-sdk check failed:\n  - cannot import '@trading-platform/sdk/ops-read' (is it installed from the release tgz?): ${(e as Error).message}`);
     process.exit(1);
   }
   if (version !== EXPECTED_OPS_VERSION) {
