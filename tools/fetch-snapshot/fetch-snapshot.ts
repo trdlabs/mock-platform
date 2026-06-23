@@ -112,11 +112,35 @@ interface FundingEntry { tsMs: number; symbol: string; rate: number; }
 interface OIEntry { tsMs: number; symbol: string; openInterestUsd: number; }
 interface LiqEntry { tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number; }
 
+/** Canonical row v2 (feature 028). Frozen 19-field shape; mirrors the contract canonicalRowV2. */
+interface CanonicalRowV2 {
+  schema_version: 2;
+  minute_ts: number;
+  symbol: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover: number;
+  oi_total_usd: number | null;
+  funding_rate: number | null;
+  liq_long_usd: number | null;
+  liq_short_usd: number | null;
+  has_oi: boolean;
+  has_funding: boolean;
+  has_liquidations: boolean;
+  taker_buy_volume_usd: number | null;
+  taker_sell_volume_usd: number | null;
+  has_taker_flow: boolean;
+}
+
 interface HistoricalBundle {
   barsBySymbolAndTimeframe: Record<string, Record<string, Bar[]>>;
   fundingBySymbol: Record<string, FundingEntry[]>;
   openInterestBySymbol: Record<string, OIEntry[]>;
   liquidationsBySymbol: Record<string, LiqEntry[]>;
+  rowsBySymbol: Record<string, CanonicalRowV2[]>;
 }
 
 // ──────────────────────────────────────────────────
@@ -545,6 +569,8 @@ export interface MinuteRow {
   funding: number | null;
   liqLong: number | null;
   liqShort: number | null;
+  takerBuy: number | null;
+  takerSell: number | null;
 }
 
 async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
@@ -635,6 +661,7 @@ export function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): Hist
   const fundingBySymbol: Record<string, FundingEntry[]> = {};
   const openInterestBySymbol: Record<string, OIEntry[]> = {};
   const liquidationsBySymbol: Record<string, LiqEntry[]> = {};
+  const rowsBySymbol: Record<string, CanonicalRowV2[]> = {};
 
   for (const [sym, rows] of Object.entries(bySymbol)) {
     rows.sort((a, b) => a.ts - b.ts);
@@ -685,13 +712,40 @@ export function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): Hist
       if (sides.short > 0) liqEntries.push({ tsMs: ts, symbol: sym, side: 'short', sizeUsd: sides.short });
     }
     liquidationsBySymbol[sym] = liqEntries;
+
+    // Canonical v2 rows — одна строка на минуту, дедуп по minute_ts (last-wins), taker сквозной.
+    const rowMap = new Map<number, CanonicalRowV2>();
+    for (const r of rows) {
+      rowMap.set(r.ts, {
+        schema_version: 2,
+        minute_ts: r.ts,
+        symbol: sym,
+        open: r.open,
+        high: r.high,
+        low: r.low,
+        close: r.close,
+        volume: r.volume,
+        turnover: r.volume * r.close,
+        oi_total_usd: r.oi,
+        funding_rate: r.funding,
+        liq_long_usd: r.liqLong,
+        liq_short_usd: r.liqShort,
+        has_oi: r.oi !== null,
+        has_funding: r.funding !== null,
+        has_liquidations: r.liqLong !== null || r.liqShort !== null,
+        taker_buy_volume_usd: r.takerBuy,
+        taker_sell_volume_usd: r.takerSell,
+        has_taker_flow: r.takerBuy !== null || r.takerSell !== null,
+      });
+    }
+    rowsBySymbol[sym] = [...rowMap.values()].sort((a, b) => a.minute_ts - b.minute_ts);
   }
 
-  return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol };
+  return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol, rowsBySymbol };
 }
 
 function emptyHistorical(): HistoricalBundle {
-  return { barsBySymbolAndTimeframe: {}, fundingBySymbol: {}, openInterestBySymbol: {}, liquidationsBySymbol: {} };
+  return { barsBySymbolAndTimeframe: {}, fundingBySymbol: {}, openInterestBySymbol: {}, liquidationsBySymbol: {}, rowsBySymbol: {} };
 }
 
 // ──────────────────────────────────────────────────
@@ -866,6 +920,7 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
       fundingBySymbol: { ...oldHist.fundingBySymbol },
       openInterestBySymbol: { ...oldHist.openInterestBySymbol },
       liquidationsBySymbol: { ...oldHist.liquidationsBySymbol },
+      rowsBySymbol: { ...oldHist.rowsBySymbol },
     };
     for (const [sym, tfMap] of Object.entries(newHist.barsBySymbolAndTimeframe)) {
       if (!mh.barsBySymbolAndTimeframe[sym]) mh.barsBySymbolAndTimeframe[sym] = {};
@@ -891,6 +946,13 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
           (a, b) => (a.tsMs - b.tsMs) || String(a.side ?? '').localeCompare(String(b.side ?? '')),
         );
       }
+    }
+    // rowsBySymbol — мёрж по symbol, дедуп по minute_ts (last-wins)
+    for (const [sym, newRows] of Object.entries(newHist.rowsBySymbol)) {
+      const old = mh.rowsBySymbol[sym] ?? [];
+      const byTs = new Map<number, CanonicalRowV2>(old.map((r) => [r.minute_ts, r]));
+      for (const r of newRows) byTs.set(r.minute_ts, r);
+      mh.rowsBySymbol[sym] = [...byTs.values()].sort((a, b) => a.minute_ts - b.minute_ts);
     }
     merged['historical'] = mh;
   }
