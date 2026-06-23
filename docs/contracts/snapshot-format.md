@@ -128,3 +128,31 @@ A snapshot intended for use as the committed synthetic fixture must satisfy:
 - No raw (unsanitized) snapshots are ever committed to git or baked into the image. Only
   the synthetic fixture lives under `data/snapshots/fixtures/`; real snapshots are
   mounted at runtime (`data/snapshots/real:ro`) and excluded by `.gitignore`.
+
+---
+
+## Taker flow & CVD (feature 028)
+
+Fresh snapshots fetched over a post-028 window carry per-minute taker flow inside
+`historical.rowsBySymbol` (`CanonicalRowV2`): `taker_buy_volume_usd`,
+`taker_sell_volume_usd`, and `has_taker_flow`. These are raw cross-source SUM quote
+volumes; `has_taker_flow=false` ⇒ both volumes are `null` (missing, distinct from a
+present zero). Older (pre-028) snapshots have no `rowsBySymbol`; the READ surface
+synthesizes rows from the per-kind series with taker `null` / `has_taker_flow=false`.
+
+**CVD is not stored.** Mirroring the platform canon, cumulative volume delta is derived
+downstream from raw taker (`cvd = Σ(taker_buy - taker_sell)` over the window). The lab
+computes it on read; the mock never persists a CVD column.
+
+### Owner runbook — produce a taker-bearing demo fixture
+
+Run from a host with VPS access (authoring-side; the VPS snapshot stays gitignored):
+
+    pnpm fetch:snapshot --vps <user@host> --db-url <...> --parquet-root <...> \
+      --from <YYYY-MM-DD> --to <YYYY-MM-DD> --ref <YYYY-MM-DD>-vps
+    pnpm make:fixture -- --source data/snapshots/<YYYY-MM-DD>-vps \
+      --out data/snapshots/fixtures/<YYYY-MM-DD>-real-top5 --top 5
+
+Pick a window where the platform's `schema_version=2/` parquet carries taker (post-028
+go-live). Real losing trades arrive naturally from the source (~72% win rate); no
+synthetic seeding. Commit the new fixture; leave `fixtures/2026-06-12-real-top5` untouched.
