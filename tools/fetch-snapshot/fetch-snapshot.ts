@@ -573,6 +573,13 @@ export interface MinuteRow {
   takerSell: number | null;
 }
 
+/** Parquet columns to read per schema version. v2 adds the additive taker quote-volume columns. */
+export function parquetColumnsFor(sv: 1 | 2): string[] {
+  const base = ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
+    'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd'];
+  return sv === 2 ? [...base, 'taker_buy_volume_usd', 'taker_sell_volume_usd'] : base;
+}
+
 async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
   type AsyncBuffer = { byteLength: number; slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer> };
   const { parquetReadObjects } = await import('hyparquet');
@@ -607,11 +614,7 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
   const bySymbol: Record<string, MinuteRow[]> = {};
 
   for (const { path, sv } of partFiles) {
-    const columns = sv === 2
-      ? ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
-          'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd']
-      : ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
-          'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd'];
+    const columns = parquetColumnsFor(sv);
 
     const file = await asyncBufferFromFile(path);
     const rows = await parquetReadObjects({ file, columns }) as Record<string, unknown>[];
@@ -640,6 +643,8 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
         funding: toNumOrNull(r['funding_rate']),
         liqLong: toNumOrNull(r['liq_long_usd']),
         liqShort: toNumOrNull(r['liq_short_usd']),
+        takerBuy: sv === 2 ? toNumOrNull(r['taker_buy_volume_usd']) : null,
+        takerSell: sv === 2 ? toNumOrNull(r['taker_sell_volume_usd']) : null,
       });
     }
   }
