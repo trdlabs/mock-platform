@@ -22,6 +22,7 @@ const sample = {
     fundingBySymbol: { A: [], B: [], C: [], D: [] },
     openInterestBySymbol: { A: [], B: [], C: [], D: [] },
     liquidationsBySymbol: { A: [], B: [], C: [], D: [] },
+    rowsBySymbol: { A: [], B: [], C: [], D: [] },
   },
 } as const;
 
@@ -54,5 +55,8 @@ describe('filterBundleToSymbols', () => {
   it('copies global health/coverage/replay unchanged', () => {
     expect(out.coverage).toEqual(sample.coverage);
     expect(out.replay).toEqual(sample.replay);
+  });
+  it('filters rowsBySymbol to the chosen symbols when present', () => {
+    expect(Object.keys(out.historical!.rowsBySymbol!).sort()).toEqual(['A', 'B']);
   });
 });

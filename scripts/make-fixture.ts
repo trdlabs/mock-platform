@@ -24,6 +24,7 @@ interface RawHistorical {
   fundingBySymbol: Record<string, unknown[]>;
   openInterestBySymbol: Record<string, unknown[]>;
   liquidationsBySymbol: Record<string, unknown[]>;
+  rowsBySymbol?: Record<string, unknown[]>;
 }
 interface RawBundle {
   runs: Array<{ id?: string; runId?: string }>;
@@ -66,6 +67,7 @@ type BundleLike = {
     readonly fundingBySymbol: { readonly [k: string]: ReadonlyArray<unknown> };
     readonly openInterestBySymbol: { readonly [k: string]: ReadonlyArray<unknown> };
     readonly liquidationsBySymbol: { readonly [k: string]: ReadonlyArray<unknown> };
+    readonly rowsBySymbol?: { readonly [k: string]: ReadonlyArray<unknown> };
   };
   readonly [k: string]: unknown;
 };
@@ -130,6 +132,14 @@ export function filterBundleToSymbols<B extends BundleLike>(bundle: B, symbols: 
           Object.fromEntries(Object.entries(h.liquidationsBySymbol).map(([k, v]) => [k, [...v]])),
           syms,
         ),
+        ...(h.rowsBySymbol !== undefined
+          ? {
+              rowsBySymbol: pickSyms(
+                Object.fromEntries(Object.entries(h.rowsBySymbol).map(([k, v]) => [k, [...v]])),
+                syms,
+              ),
+            }
+          : {}),
       }
     : undefined;
 
