@@ -1,0 +1,15 @@
+{
+  "ref": "2026-06-16-to-18-extended",
+  "createdAtMs": 1782284059561,
+  "versions": {
+    "snapshotSchemaVersion": "snapshot.1",
+    "opsReadContractVersion": "ops.3",
+    "researchReadContractVersion": "research.1",
+    "analysisContractVersion": "ops.4",
+    "exporterVersion": "synthetic-extend.1",
+    "sourcePlatformCommit": "synthetic-extend-of:2026-06-18-real-all",
+    "redactionPolicyVersion": "redact.1"
+  },
+  "bundleRef": "ops/bundle.json",
+  "checksumsRef": "checksums.json"
+}
