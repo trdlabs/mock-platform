@@ -67,9 +67,8 @@ export function buildTradeEvidenceByTrade(
   for (const r of lifecycleRows) {
     const evt = toLifecycleEvent(r);
     if (evt === null) continue;
-    const list = byTrade.get(r.tradeId) ?? [];
-    list.push(evt);
-    byTrade.set(r.tradeId, list);
+    if (!byTrade.has(r.tradeId)) byTrade.set(r.tradeId, []);
+    byTrade.get(r.tradeId)!.push(evt);
   }
   const out: Record<string, TradeEvidenceOut> = {};
   for (const t of tradeRows) {
