@@ -218,7 +218,7 @@ Options:
 // Utils
 // ──────────────────────────────────────────────────
 
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SNAPSHOT_DIR = join(REPO_ROOT, 'data', 'snapshots');
 const NOW_MS = Date.now();
 
@@ -981,7 +981,9 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
 
   const exporterTs = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15) + 'Z';
   const manifest = {
-    ref,
+    // ref is the logical snapshot identity (basename), independent of the storage
+    // sub-path passed via --ref (e.g. "fixtures/2026-06-18-real-all" → "2026-06-18-real-all").
+    ref: ref.split('/').pop() ?? ref,
     createdAtMs: NOW_MS,
     bundleRef,
     checksumsRef: checksumRef,
