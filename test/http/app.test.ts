@@ -25,7 +25,7 @@ function makeApp(tokens: string[] = []) {
 }
 
 describe('ops read http app', () => {
-  it('GET /ops/discover returns ops.3 200 (reachability for office)', async () => {
+  it('GET /ops/discover returns ops.4 200 (reachability for office)', async () => {
     const res = await makeApp().request('/ops/discover');
     expect(res.status).toBe(200);
     expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.4');

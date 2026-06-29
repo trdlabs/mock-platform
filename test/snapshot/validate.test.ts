@@ -33,4 +33,32 @@ describe('snapshot schema validation', () => {
       startedAtMs: 1, finishedAtMs: null, lastSeenMs: 2, symbols: [], hostPath: '/home/op/x' }] };
     expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
   });
+  it('accepts a fully-populated tradeEvidenceByTrade entry (positive)', () => {
+    const bundle = {
+      ...emptyBundle,
+      tradeEvidenceByTrade: {
+        t1: {
+          tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
+          openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss',
+          lifecycle: [{ tsMs: 1, type: 'entry', price: '0.1', qty: '5', note: null }],
+        },
+      },
+    };
+    expect(() => assertValidBundle(bundle)).not.toThrow();
+  });
+  it('FAILS CLOSED on a tradeLifecycleEvent missing required price field (negative)', () => {
+    const bad = {
+      ...emptyBundle,
+      tradeEvidenceByTrade: {
+        t1: {
+          tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
+          openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss',
+          lifecycle: [{ tsMs: 1, type: 'entry', qty: '5' }],
+        },
+      },
+    };
+    expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
+  });
 });
