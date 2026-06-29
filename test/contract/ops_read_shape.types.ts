@@ -6,6 +6,7 @@ import type {
   BotMode, BotRunStatus, TradeSide, OpsSeverity, BotRunStrategyRef,
   BotRunRecord, ClosedTrade, ClosedTradesAggregate, RunSummary,
   OperationalEvent, DecisionLogEntry,
+  TradeEvidence, TradeLifecycleEvent, OpsTradeLifecycleEventType,
 } from '../../src/contract/ops-read/dto.js';
 
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -21,6 +22,7 @@ type _BotRunRecord = Assert<Mutual<BotRunRecord, {
 type _ClosedTrade = Assert<Mutual<ClosedTrade, {
   readonly tradeId: string; readonly runId: string; readonly symbol: string; readonly side: TradeSide;
   readonly openedAtMs: number; readonly closedAtMs: number | null;
+  readonly entryPrice: string | null; readonly exitPrice: string | null;
   readonly realizedPnl: string; readonly pnlPct: string;
   readonly isWin: boolean | null; readonly closeReason: string | null;
 }>>;
@@ -35,5 +37,20 @@ type _DecisionLogEntry = Assert<Mutual<DecisionLogEntry, {
   readonly side: TradeSide; readonly reason: string; readonly tsMs: number; readonly safeMessage: string;
 }>>;
 
+type _OpsTradeLifecycleEventType = Assert<Mutual<OpsTradeLifecycleEventType, 'entry'|'dca'|'tp'|'sl'|'exit'|'stop_update'>>;
+
+type _TradeLifecycleEvent = Assert<Mutual<TradeLifecycleEvent, {
+  readonly tsMs: number; readonly type: OpsTradeLifecycleEventType;
+  readonly price: string | null; readonly qty: string | null; readonly note?: string | null;
+}>>;
+
+type _TradeEvidence = Assert<Mutual<TradeEvidence, {
+  readonly tradeId: string; readonly runId: string; readonly symbol: string; readonly side: TradeSide;
+  readonly openedAtMs: number; readonly closedAtMs: number | null;
+  readonly entryPrice: string | null; readonly exitPrice: string | null;
+  readonly realizedPnl: string; readonly pnlPct: string;
+  readonly closeReason: string | null; readonly lifecycle: readonly TradeLifecycleEvent[];
+}>>;
+
 // Touch the remaining re-exports so a missing barrel export is a compile error.
-export type _Touch = [OpsSeverity, OperationalEvent, _BotRunRecord, _ClosedTrade, _RunSummary, _DecisionLogEntry];
+export type _Touch = [OpsSeverity, OperationalEvent, _BotRunRecord, _ClosedTrade, _RunSummary, _DecisionLogEntry, _OpsTradeLifecycleEventType, _TradeLifecycleEvent, _TradeEvidence];

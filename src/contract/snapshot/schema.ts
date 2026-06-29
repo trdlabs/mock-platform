@@ -38,7 +38,7 @@ export const BUNDLE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
-    'runs', 'tradesByRun', 'eventsByRun', 'decisionsByRun', 'runtimeHealth',
+    'runs', 'tradesByRun', 'eventsByRun', 'decisionsByRun', 'tradeEvidenceByTrade', 'runtimeHealth',
     'marketHealth', 'executionHealth', 'coverage', 'analysisByRun', 'researchByRun', 'replay',
   ],
   properties: {
@@ -46,6 +46,7 @@ export const BUNDLE_SCHEMA = {
     tradesByRun: { type: 'object', additionalProperties: { type: 'array', items: { $ref: '#/$defs/closedTrade' } } },
     eventsByRun: { type: 'object', additionalProperties: { type: 'array', items: { $ref: '#/$defs/event' } } },
     decisionsByRun: { type: 'object', additionalProperties: { type: 'array', items: { $ref: '#/$defs/decision' } } },
+    tradeEvidenceByTrade: { type: 'object', additionalProperties: { $ref: '#/$defs/tradeEvidence' } },
     runtimeHealth: { $ref: '#/$defs/runtimeHealth' },
     marketHealth: { $ref: '#/$defs/marketHealth' },
     executionHealth: { $ref: '#/$defs/executionHealth' },
@@ -74,12 +75,35 @@ export const BUNDLE_SCHEMA = {
     },
     closedTrade: {
       type: 'object', additionalProperties: false,
-      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'realizedPnl', 'pnlPct', 'isWin', 'closeReason'],
+      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'isWin', 'closeReason'],
       properties: {
         tradeId: { type: 'string' }, runId: { type: 'string' }, symbol: { type: 'string' },
         side: { enum: ['long', 'short'] }, openedAtMs: { type: 'number' }, closedAtMs: { type: ['number', 'null'] },
+        entryPrice: { type: ['string', 'null'] }, exitPrice: { type: ['string', 'null'] },
         realizedPnl: { type: 'string' }, pnlPct: { type: 'string' }, isWin: { type: ['boolean', 'null'] },
         closeReason: { type: ['string', 'null'] },
+      },
+    },
+    tradeLifecycleEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['tsMs', 'type', 'price', 'qty'],
+      properties: {
+        tsMs: { type: 'number' },
+        type: { enum: ['entry', 'dca', 'tp', 'sl', 'exit', 'stop_update'] },
+        price: { type: ['string', 'null'] },
+        qty: { type: ['string', 'null'] },
+        note: { type: ['string', 'null'] },
+      },
+    },
+    tradeEvidence: {
+      type: 'object', additionalProperties: false,
+      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'closeReason', 'lifecycle'],
+      properties: {
+        tradeId: { type: 'string' }, runId: { type: 'string' }, symbol: { type: 'string' },
+        side: { enum: ['long', 'short'] }, openedAtMs: { type: 'number' }, closedAtMs: { type: ['number', 'null'] },
+        entryPrice: { type: ['string', 'null'] }, exitPrice: { type: ['string', 'null'] },
+        realizedPnl: { type: 'string' }, pnlPct: { type: 'string' }, closeReason: { type: ['string', 'null'] },
+        lifecycle: { type: 'array', items: { $ref: '#/$defs/tradeLifecycleEvent' } },
       },
     },
     event: {

@@ -1,15 +1,15 @@
 {
   "ref": "2026-06-18-real-all",
-  "createdAtMs": 1782284059561,
+  "createdAtMs": 1782766912565,
   "bundleRef": "ops/bundle.json",
   "checksumsRef": "checksums.json",
   "versions": {
     "snapshotSchemaVersion": "snapshot.1",
-    "opsReadContractVersion": "ops.3",
+    "opsReadContractVersion": "ops.4",
     "researchReadContractVersion": "research.1",
     "analysisContractVersion": "ops.4",
     "exporterVersion": "fetch-snapshot.1",
-    "sourcePlatformCommit": "vps-fetch-2026-06-24T0654Z",
+    "sourcePlatformCommit": "vps-fetch-2026-06-29T2101Z",
     "redactionPolicyVersion": "redact.1"
   }
 }

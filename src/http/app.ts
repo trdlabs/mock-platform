@@ -10,6 +10,7 @@ import { handleRuns } from '../ops/handlers/runs.js';
 import type { RunsFilter } from '../snapshot/readers/runs.js';
 import { handleSummary } from '../ops/handlers/summary.js';
 import { handleTrades } from '../ops/handlers/trades.js';
+import { handleTradeEvidence } from '../ops/handlers/trade-evidence.js';
 import { handleEvents } from '../ops/handlers/events.js';
 import { handleDecisions } from '../ops/handlers/decisions.js';
 import { handleRuntimeHealth, handleMarketHealth, handleExecutionHealth } from '../ops/handlers/health.js';
@@ -67,6 +68,7 @@ export function createApp(deps: AppDeps) {
   app.get('/ops/runs/:runId/summary', (c) => respond(c, handleSummary(bundle, c.req.param('runId'), now())));
   app.get('/ops/runs/:runId/analysis', (c) => respond(c, handleAnalysis(bundle, c.req.param('runId'))));
   app.get('/ops/trades', (c) => respond(c, handleTrades(bundle, c.req.query('runId') ?? '', now(), c.req.query('cursor'))));
+  app.get('/ops/trade-evidence', (c) => respond(c, handleTradeEvidence(bundle, c.req.query('tradeIds') ?? '', now())));
   // GET → EventsPage list. A WebSocket upgrade falls through to the WS route registered below
   // (Hono runs same-path handlers in order; this one yields via next() only for upgrades).
   app.get('/ops/events', (c, next) => {

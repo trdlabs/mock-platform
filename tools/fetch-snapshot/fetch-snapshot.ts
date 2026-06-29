@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
+import { buildTradeEvidenceByTrade, type EvidenceTradeRow, type EvidenceLifecycleRow, type TradeEvidenceOut } from './trade-evidence-map.js';
 
 // ──────────────────────────────────────────────────
 // Типы (повторяем нужные минимальные формы контрактов)
@@ -66,6 +67,8 @@ interface ClosedTrade {
   side: string;
   openedAtMs: number;
   closedAtMs: number;
+  entryPrice: string | null;
+  exitPrice: string | null;
   realizedPnl: string;
   pnlPct: string | null;
   isWin: boolean | null;
@@ -97,6 +100,7 @@ interface OpsData {
   tradesByRun: Record<string, ClosedTrade[]>;
   eventsByRun: Record<string, OpsEvent[]>;
   decisionsByRun: Record<string, DecisionEntry[]>;
+  tradeEvidenceByTrade: Record<string, TradeEvidenceOut>;
 }
 
 interface Bar {
@@ -214,7 +218,7 @@ Options:
 // Utils
 // ──────────────────────────────────────────────────
 
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SNAPSHOT_DIR = join(REPO_ROOT, 'data', 'snapshots');
 const NOW_MS = Date.now();
 
@@ -358,7 +362,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
     console.log(`[pg] Found ${runs.length} run(s)`);
 
     if (runs.length === 0) {
-      return { runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {} };
+      return { runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {}, tradeEvidenceByTrade: {} };
     }
 
     const runIds = runs.map((r) => r.runId);
@@ -370,8 +374,8 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
     console.log(`[pg] Querying trades for ${runIds.length} run(s)…`);
     const tradesRes = await client.query<{
       tradeId: string; runId: string; symbol: string; side: string;
-      openedAtMs: string; closedAtMs: string; realizedPnl: string;
-      pnlPct: string | null; isWin: boolean | null; closeReason: string | null;
+      openedAtMs: string; closedAtMs: string; entryPrice: string | null; exitPrice: string | null;
+      realizedPnl: string; pnlPct: string | null; isWin: boolean | null; closeReason: string | null;
     }>(`
       SELECT
         trade_id      AS "tradeId",
@@ -380,6 +384,8 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
         side,
         opened_at_ms  AS "openedAtMs",
         closed_at_ms  AS "closedAtMs",
+        avg_entry::text  AS "entryPrice",
+        exit_price::text AS "exitPrice",
         pnl::text     AS "realizedPnl",
         pnl_pct::text AS "pnlPct",
         is_win        AS "isWin",
@@ -402,6 +408,8 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
           side: t.side,
           openedAtMs: Number(t.openedAtMs),
           closedAtMs: Number(t.closedAtMs),
+          entryPrice: t.entryPrice,
+          exitPrice: t.exitPrice,
           realizedPnl: t.realizedPnl ?? '0',
           pnlPct: t.pnlPct ?? '0',
           isWin: t.isWin ?? null,
@@ -409,6 +417,13 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
         });
       }
     }
+
+    const evidenceTradeRows: EvidenceTradeRow[] = tradesRes.rows.map((t) => ({
+      tradeId: t.tradeId, runId: t.runId, symbol: t.symbol, side: t.side as 'long' | 'short',
+      openedAtMs: Number(t.openedAtMs), closedAtMs: Number(t.closedAtMs),
+      entryPrice: t.entryPrice, exitPrice: t.exitPrice,
+      realizedPnl: t.realizedPnl ?? '0', pnlPct: t.pnlPct ?? '0', closeReason: t.closeReason ?? null,
+    }));
 
     // ── operational_events ────────────────────────
     console.log('[pg] Querying operational_events…');
@@ -483,7 +498,35 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
       }
     }
 
-    return { runs, tradesByRun, eventsByRun, decisionsByRun };
+    // ── trade_lifecycle_event (ops.4 Surface A) ──
+    const tradeIds = evidenceTradeRows.map((t) => t.tradeId);
+    let tradeEvidenceByTrade: Record<string, TradeEvidenceOut> = {};
+    if (tradeIds.length > 0) {
+      console.log(`[pg] Querying trade_lifecycle_event for ${tradeIds.length} trade(s)…`);
+      const lifeRes = await client.query<{
+        tradeId: string; eventType: string; tsMs: string;
+        fillPrice: string | null; triggerPrice: string | null; qty: string | null; reason: string | null;
+      }>(`
+        SELECT
+          trade_id            AS "tradeId",
+          event_type          AS "eventType",
+          business_ts_ms::text AS "tsMs",
+          fill_price::text     AS "fillPrice",
+          trigger_price::text  AS "triggerPrice",
+          qty::text            AS "qty",
+          reason
+        FROM canonical.trade_lifecycle_event
+        WHERE trade_id = ANY($1)
+        ORDER BY trade_id, sequence_in_trade ASC
+      `, [tradeIds]);
+      const lifecycleRows: EvidenceLifecycleRow[] = lifeRes.rows.map((r) => ({
+        tradeId: r.tradeId, eventType: r.eventType, tsMs: Number(r.tsMs),
+        fillPrice: r.fillPrice, triggerPrice: r.triggerPrice, qty: r.qty, reason: r.reason,
+      }));
+      tradeEvidenceByTrade = buildTradeEvidenceByTrade(evidenceTradeRows, lifecycleRows);
+    }
+
+    return { runs, tradesByRun, eventsByRun, decisionsByRun, tradeEvidenceByTrade };
   } finally {
     client.release();
     await pool.end();
@@ -810,6 +853,7 @@ function buildBundle(
     tradesByRun: ops.tradesByRun,
     eventsByRun: ops.eventsByRun,
     decisionsByRun: ops.decisionsByRun,
+    tradeEvidenceByTrade: ops.tradeEvidenceByTrade,
     ...stubHealthFields(),
     analysisByRun: buildAnalysisByRun(ops.runs, ops.tradesByRun, tsFrom, tsTo),
     researchByRun: buildResearchByRun(ops.runs, ops.tradesByRun, ops.decisionsByRun),
@@ -851,6 +895,7 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
   merged['tradesByRun'] = mergeDict((existing['tradesByRun'] as Record<string, unknown>) ?? {}, (newBundle['tradesByRun'] as Record<string, unknown>) ?? {});
   merged['eventsByRun'] = mergeDict((existing['eventsByRun'] as Record<string, unknown>) ?? {}, (newBundle['eventsByRun'] as Record<string, unknown>) ?? {});
   merged['decisionsByRun'] = mergeDict((existing['decisionsByRun'] as Record<string, unknown>) ?? {}, (newBundle['decisionsByRun'] as Record<string, unknown>) ?? {});
+  merged['tradeEvidenceByTrade'] = mergeDict((existing['tradeEvidenceByTrade'] as Record<string, unknown>) ?? {}, (newBundle['tradeEvidenceByTrade'] as Record<string, unknown>) ?? {});
   merged['analysisByRun'] = mergeDict((existing['analysisByRun'] as Record<string, unknown>) ?? {}, (newBundle['analysisByRun'] as Record<string, unknown>) ?? {});
   merged['researchByRun'] = mergeDict((existing['researchByRun'] as Record<string, unknown>) ?? {}, (newBundle['researchByRun'] as Record<string, unknown>) ?? {});
   for (const k of ['runtimeHealth', 'marketHealth', 'executionHealth', 'coverage', 'replay'] as const) {
@@ -936,13 +981,15 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
 
   const exporterTs = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15) + 'Z';
   const manifest = {
-    ref,
+    // ref is the logical snapshot identity (basename), independent of the storage
+    // sub-path passed via --ref (e.g. "fixtures/2026-06-18-real-all" → "2026-06-18-real-all").
+    ref: ref.split('/').pop() ?? ref,
     createdAtMs: NOW_MS,
     bundleRef,
     checksumsRef: checksumRef,
     versions: {
       snapshotSchemaVersion: 'snapshot.1',
-      opsReadContractVersion: 'ops.3',
+      opsReadContractVersion: 'ops.4',
       researchReadContractVersion: 'research.1',
       analysisContractVersion: 'ops.4',
       exporterVersion: 'fetch-snapshot.1',

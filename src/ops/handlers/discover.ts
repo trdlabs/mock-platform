@@ -16,6 +16,8 @@ const RESOURCES: readonly OpsResourceDescriptor[] = [
   { name: 'execution-health', supportedFilters: [], pagination: null, fields: ['status', 'availability', 'asOf'], availability: 'available' },
   { name: 'source-coverage', supportedFilters: ['source', 'kind'], pagination: null, fields: ['entries', 'availability', 'asOf'], availability: 'available' },
   { name: 'run-analysis', supportedFilters: [], pagination: null, fields: ['runRef', 'metrics', 'trades'] },
+  { name: 'trade-evidence', supportedFilters: ['tradeIds'], pagination: null,
+    fields: ['tradeId', 'runId', 'symbol', 'side', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'closeReason', 'lifecycle'] },
 ];
 
 export function buildDiscover(): OpsCapabilityDescriptor {

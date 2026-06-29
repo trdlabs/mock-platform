@@ -4,7 +4,7 @@ import type {
   OpsResourceAvailability,
 } from '../common/envelopes.js';
 import type { OpsCapabilities } from '../common/capabilities.js';
-import type { BotRunRecord, ClosedTrade, OperationalEvent, DecisionLogEntry } from './dto.sdk.js';
+import type { BotRunRecord, ClosedTrade, OperationalEvent, DecisionLogEntry, TradeEvidence } from './dto.sdk.js';
 
 // --- health + coverage ---
 export type OpsHealthStatus = 'ok' | 'degraded' | 'down';
@@ -78,3 +78,4 @@ export type RunsPage = PageEnvelope<BotRunRecord>;
 export type TradesPage = PageEnvelope<ClosedTrade>;
 export type EventsPage = PageEnvelope<OperationalEvent>;
 export type DecisionsPage = PageEnvelope<DecisionLogEntry>;
+export type TradeEvidencePage = PageEnvelope<TradeEvidence>;

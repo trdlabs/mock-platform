@@ -4,7 +4,7 @@ import type { SnapshotVersions } from '../../src/contract/snapshot/manifest.js';
 
 const base: SnapshotVersions = {
   snapshotSchemaVersion: 'snapshot.1',
-  opsReadContractVersion: 'ops.3',
+  opsReadContractVersion: 'ops.4',
   researchReadContractVersion: 'research.1',
   analysisContractVersion: 'ops.4',
   exporterVersion: 'exp.1',
@@ -24,8 +24,8 @@ describe('assertSnapshotCompatible', () => {
     expect(() => assertSnapshotCompatible({ ...base, opsReadContractVersion: 'ops.99' }))
       .toThrow(/unsupported opsReadContractVersion/i);
   });
-  it('fails closed on an OLDER ops-read minor (ops.2 is NOT compatible with ops.3 in MVP)', () => {
-    expect(() => assertSnapshotCompatible({ ...base, opsReadContractVersion: 'ops.2' }))
-      .toThrow(/unsupported opsReadContractVersion 'ops\.2'/i);
+  it('fails closed on an OLDER ops-read minor (ops.3 is NOT compatible with ops.4 in MVP)', () => {
+    expect(() => assertSnapshotCompatible({ ...base, opsReadContractVersion: 'ops.3' }))
+      .toThrow(/unsupported opsReadContractVersion 'ops\.3'/i);
   });
 });

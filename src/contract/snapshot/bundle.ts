@@ -1,5 +1,5 @@
 import type {
-  BotRunRecord, ClosedTrade, OperationalEvent, DecisionLogEntry,
+  BotRunRecord, ClosedTrade, OperationalEvent, DecisionLogEntry, TradeEvidence,
   RuntimeHealthCollection, MarketServiceHealthSnapshot, ExecutionHealthSnapshot,
   SourceCoverageSnapshot,
 } from '../ops-read/dto.js';
@@ -25,6 +25,7 @@ export interface SnapshotBundle {
   readonly tradesByRun: Readonly<Record<string, readonly ClosedTrade[]>>;
   readonly eventsByRun: Readonly<Record<string, readonly OperationalEvent[]>>;
   readonly decisionsByRun: Readonly<Record<string, readonly DecisionLogEntry[]>>;
+  readonly tradeEvidenceByTrade: Readonly<Record<string, TradeEvidence>>;
   readonly runtimeHealth: RuntimeHealthCollection;
   readonly marketHealth: MarketServiceHealthSnapshot;
   readonly executionHealth: ExecutionHealthSnapshot;

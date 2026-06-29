@@ -11,7 +11,7 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'snap-'));
   mkdirSync(join(dir, 'ops'), { recursive: true });
   const bundle = {
-    runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {},
+    runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {}, tradeEvidenceByTrade: {},
     runtimeHealth: { entries: [], asOf: 1 },
     marketHealth: { status: 'ok', diagnostics: {}, streamAgeMs: null, availability: 'available', asOf: 1 },
     executionHealth: { status: 'ok', recentCounts: {}, lastEventMs: null, availability: 'unavailable', asOf: 1 },
@@ -25,7 +25,7 @@ beforeAll(() => {
   const manifest = {
     ref: 'test', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
     versions: {
-      snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.3',
+      snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.4',
       researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
       exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
     },
@@ -47,7 +47,7 @@ describe('loadSnapshot', () => {
     writeFileSync(join(bad, 'manifest.json'), JSON.stringify({
       ref: 'bad', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
       versions: {
-        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.3',
+        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.4',
         researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
         exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
       },
@@ -58,7 +58,7 @@ describe('loadSnapshot', () => {
     const bad = mkdtempSync(join(tmpdir(), 'snap-leak-'));
     mkdirSync(join(bad, 'ops'), { recursive: true });
     const leaked = {
-      runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {},
+      runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {}, tradeEvidenceByTrade: {},
       runtimeHealth: { entries: [], asOf: 1 },
       marketHealth: { status: 'ok', diagnostics: {}, streamAgeMs: null, availability: 'available', asOf: 1 },
       executionHealth: { status: 'ok', recentCounts: {}, lastEventMs: null, availability: 'unavailable', asOf: 1 },
@@ -72,7 +72,7 @@ describe('loadSnapshot', () => {
     writeFileSync(join(bad, 'manifest.json'), JSON.stringify({
       ref: 'leak', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
       versions: {
-        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.3',
+        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.4',
         researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
         exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
       },

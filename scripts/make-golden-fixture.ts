@@ -56,6 +56,7 @@ function buildBundle(rows: readonly CanonicalRowV2[]): SnapshotBundle {
     tradesByRun: {},
     eventsByRun: {},
     decisionsByRun: {},
+    tradeEvidenceByTrade: {},
     runtimeHealth: { entries: [], asOf: ASOF },
     marketHealth: { status: 'down', diagnostics: {}, streamAgeMs: null, availability: 'unavailable', asOf: ASOF },
     executionHealth: { status: 'down', recentCounts: {}, lastEventMs: null, availability: 'unavailable', asOf: ASOF },
