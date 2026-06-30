@@ -75,4 +75,33 @@ describe('snapshot schema validation', () => {
     };
     expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
   });
+  it('FAILS CLOSED on a tradeEvidence missing required closeReasonRaw field', () => {
+    const bad = {
+      ...emptyBundle,
+      tradeEvidenceByTrade: {
+        t1: {
+          tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
+          openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss',
+          lifecycle: [{ tsMs: 1, type: 'entry', price: '0.1', qty: '5', note: null }],
+        },
+      },
+    };
+    expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
+  });
+  it('FAILS CLOSED on a closedTrade with a raw (non-canonical) closeReason value', () => {
+    const bad = {
+      ...emptyBundle,
+      tradesByRun: {
+        r1: [
+          {
+            tradeId: 't1', symbol: 'ESPORTSUSDT', side: 'long',
+            openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
+            realizedPnl: '-1', pnlPct: '-10', closeReason: 'tp2', closeReasonRaw: 'tp2',
+          },
+        ],
+      },
+    };
+    expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
+  });
 });
