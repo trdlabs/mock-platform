@@ -25,6 +25,7 @@ export interface EvidenceTradeRow {
   readonly realizedPnl: string;
   readonly pnlPct: string;
   readonly closeReason: string | null;
+  readonly closeReasonRaw: string | null;
 }
 
 export interface LifecycleEvt {
@@ -76,7 +77,7 @@ export function buildTradeEvidenceByTrade(
       tradeId: t.tradeId, runId: t.runId, symbol: t.symbol, side: t.side,
       openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs,
       entryPrice: t.entryPrice, exitPrice: t.exitPrice,
-      realizedPnl: t.realizedPnl, pnlPct: t.pnlPct, closeReason: t.closeReason,
+      realizedPnl: t.realizedPnl, pnlPct: t.pnlPct, closeReason: t.closeReason, closeReasonRaw: t.closeReasonRaw,
       lifecycle: byTrade.get(t.tradeId) ?? [],
     };
   }

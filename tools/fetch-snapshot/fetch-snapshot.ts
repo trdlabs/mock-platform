@@ -43,6 +43,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 import { buildTradeEvidenceByTrade, type EvidenceTradeRow, type EvidenceLifecycleRow, type TradeEvidenceOut } from './trade-evidence-map.js';
+import { classifyCloseReason } from '../../src/contract/ops-read/close-reason.js';
 
 // ──────────────────────────────────────────────────
 // Типы (повторяем нужные минимальные формы контрактов)
@@ -73,6 +74,7 @@ interface ClosedTrade {
   pnlPct: string | null;
   isWin: boolean | null;
   closeReason: string | null;
+  closeReasonRaw: string | null;
 }
 
 interface OpsEvent {
@@ -375,7 +377,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
     const tradesRes = await client.query<{
       tradeId: string; runId: string; symbol: string; side: string;
       openedAtMs: string; closedAtMs: string; entryPrice: string | null; exitPrice: string | null;
-      realizedPnl: string; pnlPct: string | null; isWin: boolean | null; closeReason: string | null;
+      realizedPnl: string; pnlPct: string | null; isWin: boolean | null; closeReasonRaw: string | null;
     }>(`
       SELECT
         trade_id      AS "tradeId",
@@ -389,7 +391,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
         pnl::text     AS "realizedPnl",
         pnl_pct::text AS "pnlPct",
         is_win        AS "isWin",
-        close_reason  AS "closeReason"
+        close_reason  AS "closeReasonRaw"
       FROM canonical.trade
       WHERE run_id = ANY($1)
         AND closed_at_ms IS NOT NULL
@@ -413,7 +415,8 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
           realizedPnl: t.realizedPnl ?? '0',
           pnlPct: t.pnlPct ?? '0',
           isWin: t.isWin ?? null,
-          closeReason: t.closeReason ?? null,
+          closeReasonRaw: t.closeReasonRaw ?? null,
+          closeReason: classifyCloseReason(t.closeReasonRaw ?? null),
         });
       }
     }
@@ -422,7 +425,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
       tradeId: t.tradeId, runId: t.runId, symbol: t.symbol, side: t.side as 'long' | 'short',
       openedAtMs: Number(t.openedAtMs), closedAtMs: Number(t.closedAtMs),
       entryPrice: t.entryPrice, exitPrice: t.exitPrice,
-      realizedPnl: t.realizedPnl ?? '0', pnlPct: t.pnlPct ?? '0', closeReason: t.closeReason ?? null,
+      realizedPnl: t.realizedPnl ?? '0', pnlPct: t.pnlPct ?? '0', closeReason: classifyCloseReason(t.closeReasonRaw ?? null), closeReasonRaw: t.closeReasonRaw ?? null,
     }));
 
     // ── operational_events ────────────────────────
@@ -989,7 +992,7 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
     checksumsRef: checksumRef,
     versions: {
       snapshotSchemaVersion: 'snapshot.1',
-      opsReadContractVersion: 'ops.4',
+      opsReadContractVersion: 'ops.5',
       researchReadContractVersion: 'research.1',
       analysisContractVersion: 'ops.4',
       exporterVersion: 'fetch-snapshot.1',

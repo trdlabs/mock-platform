@@ -31,7 +31,7 @@ describe('toLifecycleEvent', () => {
 describe('buildTradeEvidenceByTrade', () => {
   it('groups lifecycle by trade in input order and skips unknown events', () => {
     const trades = [{ tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long' as const,
-      openedAtMs: 1, closedAtMs: 9, entryPrice: '0.1', exitPrice: '0.09', realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss' }];
+      openedAtMs: 1, closedAtMs: 9, entryPrice: '0.1', exitPrice: '0.09', realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss', closeReasonRaw: 'hard_stop' }];
     const life = [
       { tradeId: 't1', eventType: 'trade_opened', tsMs: 1, fillPrice: '0.1', triggerPrice: null, qty: '5', reason: 'signal' },
       { tradeId: 't1', eventType: 'noise', tsMs: 2, fillPrice: null, triggerPrice: null, qty: null, reason: null },
@@ -41,11 +41,13 @@ describe('buildTradeEvidenceByTrade', () => {
     expect(Object.keys(out)).toEqual(['t1']);
     expect(out['t1']!.lifecycle.map((e) => e.type)).toEqual(['entry', 'exit']);
     expect(out['t1']!.entryPrice).toBe('0.1');
+    expect(out['t1']!.closeReason).toBe('stop_loss');
+    expect(out['t1']!.closeReasonRaw).toBe('hard_stop');
   });
   it('groups interleaved lifecycle rows by trade without cross-contamination', () => {
     const trades = [
-      { tradeId: 't1', runId: 'r', symbol: 'A', side: 'long' as const, openedAtMs: 1, closedAtMs: 4, entryPrice: '1', exitPrice: '2', realizedPnl: '1', pnlPct: '1', closeReason: null },
-      { tradeId: 't2', runId: 'r', symbol: 'B', side: 'short' as const, openedAtMs: 2, closedAtMs: 5, entryPrice: '3', exitPrice: '4', realizedPnl: '1', pnlPct: '1', closeReason: null },
+      { tradeId: 't1', runId: 'r', symbol: 'A', side: 'long' as const, openedAtMs: 1, closedAtMs: 4, entryPrice: '1', exitPrice: '2', realizedPnl: '1', pnlPct: '1', closeReason: null, closeReasonRaw: null },
+      { tradeId: 't2', runId: 'r', symbol: 'B', side: 'short' as const, openedAtMs: 2, closedAtMs: 5, entryPrice: '3', exitPrice: '4', realizedPnl: '1', pnlPct: '1', closeReason: null, closeReasonRaw: null },
     ];
     const life = [
       { tradeId: 't1', eventType: 'trade_opened', tsMs: 1, fillPrice: '1', triggerPrice: null, qty: '1', reason: null },
