@@ -5,7 +5,7 @@ import type { SnapshotBundle } from '../../src/contract/snapshot/bundle.js';
 
 const ev = (tradeId: string) => ({ tradeId, runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
   openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09', realizedPnl: '-1', pnlPct: '-10',
-  closeReason: 'stop_loss', lifecycle: [{ tsMs: 1, type: 'entry', price: '0.1', qty: '5', note: null }] });
+  closeReason: 'stop_loss', closeReasonRaw: 'hard_stop', lifecycle: [{ tsMs: 1, type: 'entry', price: '0.1', qty: '5', note: null }] });
 const bundle = { tradeEvidenceByTrade: { t1: ev('t1') } } as unknown as SnapshotBundle;
 
 describe('handleTradeEvidence', () => {

@@ -28,6 +28,11 @@ export const MANIFEST_SCHEMA = {
   },
 } as const;
 
+const CLOSE_REASON_ENUM = [
+  'take_profit_final', 'take_profit_partial', 'stop_loss', 'breakeven', 'trailing_stop',
+  'signal_exit', 'time_exit', 'liquidation', 'manual', 'other', null,
+] as const;
+
 const capabilityAbsent = {
   type: 'object', additionalProperties: false, required: ['available'],
   properties: { available: { const: false }, reason: { type: 'string' } },
@@ -75,13 +80,14 @@ export const BUNDLE_SCHEMA = {
     },
     closedTrade: {
       type: 'object', additionalProperties: false,
-      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'isWin', 'closeReason'],
+      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'isWin', 'closeReason', 'closeReasonRaw'],
       properties: {
         tradeId: { type: 'string' }, runId: { type: 'string' }, symbol: { type: 'string' },
         side: { enum: ['long', 'short'] }, openedAtMs: { type: 'number' }, closedAtMs: { type: ['number', 'null'] },
         entryPrice: { type: ['string', 'null'] }, exitPrice: { type: ['string', 'null'] },
         realizedPnl: { type: 'string' }, pnlPct: { type: 'string' }, isWin: { type: ['boolean', 'null'] },
-        closeReason: { type: ['string', 'null'] },
+        closeReason: { enum: ['take_profit_final', 'take_profit_partial', 'stop_loss', 'breakeven', 'trailing_stop', 'signal_exit', 'time_exit', 'liquidation', 'manual', 'other', null] },
+        closeReasonRaw: { type: ['string', 'null'] },
       },
     },
     tradeLifecycleEvent: {
@@ -97,12 +103,14 @@ export const BUNDLE_SCHEMA = {
     },
     tradeEvidence: {
       type: 'object', additionalProperties: false,
-      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'closeReason', 'lifecycle'],
+      required: ['tradeId', 'runId', 'symbol', 'side', 'openedAtMs', 'closedAtMs', 'entryPrice', 'exitPrice', 'realizedPnl', 'pnlPct', 'closeReason', 'closeReasonRaw', 'lifecycle'],
       properties: {
         tradeId: { type: 'string' }, runId: { type: 'string' }, symbol: { type: 'string' },
         side: { enum: ['long', 'short'] }, openedAtMs: { type: 'number' }, closedAtMs: { type: ['number', 'null'] },
         entryPrice: { type: ['string', 'null'] }, exitPrice: { type: ['string', 'null'] },
-        realizedPnl: { type: 'string' }, pnlPct: { type: 'string' }, closeReason: { type: ['string', 'null'] },
+        realizedPnl: { type: 'string' }, pnlPct: { type: 'string' },
+        closeReason: { enum: ['take_profit_final', 'take_profit_partial', 'stop_loss', 'breakeven', 'trailing_stop', 'signal_exit', 'time_exit', 'liquidation', 'manual', 'other', null] },
+        closeReasonRaw: { type: ['string', 'null'] },
         lifecycle: { type: 'array', items: { $ref: '#/$defs/tradeLifecycleEvent' } },
       },
     },

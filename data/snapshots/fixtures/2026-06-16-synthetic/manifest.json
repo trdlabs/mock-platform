@@ -5,7 +5,7 @@
   "checksumsRef": "checksums.json",
   "versions": {
     "snapshotSchemaVersion": "snapshot.1",
-    "opsReadContractVersion": "ops.4",
+    "opsReadContractVersion": "ops.5",
     "researchReadContractVersion": "research.1",
     "analysisContractVersion": "ops.4",
     "exporterVersion": "synthetic.1",

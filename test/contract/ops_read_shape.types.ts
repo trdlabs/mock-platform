@@ -6,7 +6,7 @@ import type {
   BotMode, BotRunStatus, TradeSide, OpsSeverity, BotRunStrategyRef,
   BotRunRecord, ClosedTrade, ClosedTradesAggregate, RunSummary,
   OperationalEvent, DecisionLogEntry,
-  TradeEvidence, TradeLifecycleEvent, OpsTradeLifecycleEventType,
+  TradeEvidence, TradeLifecycleEvent, OpsTradeLifecycleEventType, CloseReason,
 } from '../../src/contract/ops-read/dto.js';
 
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -24,7 +24,8 @@ type _ClosedTrade = Assert<Mutual<ClosedTrade, {
   readonly openedAtMs: number; readonly closedAtMs: number | null;
   readonly entryPrice: string | null; readonly exitPrice: string | null;
   readonly realizedPnl: string; readonly pnlPct: string;
-  readonly isWin: boolean | null; readonly closeReason: string | null;
+  readonly isWin: boolean | null; readonly closeReason: CloseReason | null;
+  readonly closeReasonRaw: string | null;
 }>>;
 
 // RunSummary extends ClosedTradesAggregate — the RHS models that inheritance as an intersection.
@@ -49,8 +50,9 @@ type _TradeEvidence = Assert<Mutual<TradeEvidence, {
   readonly openedAtMs: number; readonly closedAtMs: number | null;
   readonly entryPrice: string | null; readonly exitPrice: string | null;
   readonly realizedPnl: string; readonly pnlPct: string;
-  readonly closeReason: string | null; readonly lifecycle: readonly TradeLifecycleEvent[];
+  readonly closeReason: CloseReason | null; readonly closeReasonRaw: string | null;
+  readonly lifecycle: readonly TradeLifecycleEvent[];
 }>>;
 
 // Touch the remaining re-exports so a missing barrel export is a compile error.
-export type _Touch = [OpsSeverity, OperationalEvent, _BotRunRecord, _ClosedTrade, _RunSummary, _DecisionLogEntry, _OpsTradeLifecycleEventType, _TradeLifecycleEvent, _TradeEvidence];
+export type _Touch = [OpsSeverity, OperationalEvent, CloseReason, _BotRunRecord, _ClosedTrade, _RunSummary, _DecisionLogEntry, _OpsTradeLifecycleEventType, _TradeLifecycleEvent, _TradeEvidence];

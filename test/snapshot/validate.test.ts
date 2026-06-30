@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { assertValidManifest, assertValidBundle } from '../../src/snapshot/validate.js';
 
 const versions = {
-  snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.4',
+  snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
   researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
   exporterVersion: 'e', sourcePlatformCommit: 'x', redactionPolicyVersion: 'r',
 };
@@ -40,7 +40,7 @@ describe('snapshot schema validation', () => {
         t1: {
           tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
           openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
-          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss', closeReasonRaw: 'hard_stop',
           lifecycle: [{ tsMs: 1, type: 'entry', price: '0.1', qty: '5', note: null }],
         },
       },
@@ -54,8 +54,22 @@ describe('snapshot schema validation', () => {
         t1: {
           tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
           openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
-          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss', closeReasonRaw: 'hard_stop',
           lifecycle: [{ tsMs: 1, type: 'entry', qty: '5' }],
+        },
+      },
+    };
+    expect(() => assertValidBundle(bad)).toThrow(/bundle failed schema/i);
+  });
+  it('FAILS CLOSED on a tradeEvidence with a raw (non-canonical) closeReason value', () => {
+    const bad = {
+      ...emptyBundle,
+      tradeEvidenceByTrade: {
+        t1: {
+          tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long',
+          openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09',
+          realizedPnl: '-1', pnlPct: '-10', closeReason: 'tp2', closeReasonRaw: 'tp2',
+          lifecycle: [],
         },
       },
     };

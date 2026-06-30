@@ -6,7 +6,7 @@ export type {
   BotMode, BotRunStatus, TradeSide, OpsSeverity, BotRunStrategyRef,
   BotRunRecord, ClosedTrade, ClosedTradesAggregate, RunSummary,
   OperationalEvent, DecisionLogEntry,
-  TradeEvidence, TradeLifecycleEvent, OpsTradeLifecycleEventType,
+  TradeEvidence, TradeLifecycleEvent, OpsTradeLifecycleEventType, CloseReason,
 } from '@trading-platform/sdk/ops-read';
 export { OPS_READ_CONTRACT_VERSION } from '@trading-platform/sdk/ops-read';
 export type { OpsReadContractVersion } from '@trading-platform/sdk/ops-read';

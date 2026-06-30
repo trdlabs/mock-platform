@@ -4,14 +4,14 @@ import type { LoadedSnapshot } from '../../src/snapshot/loader.js';
 
 const snap = {
   dir: '.', manifest: { ref: 't', createdAtMs: 1, bundleRef: 'b', checksumsRef: 'c',
-    versions: { snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.4',
+    versions: { snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
       researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
       exporterVersion: 'e', sourcePlatformCommit: 'x', redactionPolicyVersion: 'r' } },
   bundle: {
     runs: [{ runId: 'r1', mode: 'live', status: 'running', strategy: { name: 's', version: '1' },
       startedAtMs: 1, finishedAtMs: null, lastSeenMs: 2, symbols: ['BTCUSDT'] }],
     tradesByRun: { r1: [] }, eventsByRun: {}, decisionsByRun: {},
-    tradeEvidenceByTrade: { t1: { tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long', openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09', realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss', lifecycle: [] } },
+    tradeEvidenceByTrade: { t1: { tradeId: 't1', runId: 'r1', symbol: 'ESPORTSUSDT', side: 'long', openedAtMs: 1, closedAtMs: 2, entryPrice: '0.1', exitPrice: '0.09', realizedPnl: '-1', pnlPct: '-10', closeReason: 'stop_loss', closeReasonRaw: 'hard_stop', lifecycle: [] } },
     runtimeHealth: { entries: [], asOf: 1 },
     marketHealth: { status: 'ok', diagnostics: {}, streamAgeMs: null, availability: 'available', asOf: 1 },
     executionHealth: { status: 'ok', recentCounts: {}, lastEventMs: null, availability: 'unavailable', asOf: 1 },
@@ -28,7 +28,7 @@ describe('ops read http app', () => {
   it('GET /ops/discover returns ops.4 200 (reachability for office)', async () => {
     const res = await makeApp().request('/ops/discover');
     expect(res.status).toBe(200);
-    expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.4');
+    expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.5');
   });
   it('GET /ops/runs?mode=live returns a page with strategy.name present', async () => {
     const res = await makeApp().request('/ops/runs?mode=live');
@@ -72,7 +72,7 @@ describe('ops read http app', () => {
   it('discover advertises ops.4 and the trade-evidence resource', async () => {
     const res = await makeApp().request('/ops/discover');
     const body = await res.json() as { opsContractVersion: string; resources: { name: string }[] };
-    expect(body.opsContractVersion).toBe('ops.4');
+    expect(body.opsContractVersion).toBe('ops.5');
     expect(body.resources.some((r) => r.name === 'trade-evidence')).toBe(true);
   });
 });
