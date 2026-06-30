@@ -1,8 +1,10 @@
 /**
- * migrate-fixtures-ops5 — re-key committed fixtures from raw close_reason strings to the canonical
- * CloseReason union (ops.5). For every ClosedTrade and TradeEvidence: closeReasonRaw = the original raw,
- * closeReason = classifyCloseReason(raw). Idempotent (always derived from raw). Bumps manifest
- * opsReadContractVersion → ops.5, re-checksums, self-validates via loadSnapshot. Deterministic, no VPS.
+ * migrate-fixtures-ops5 — re-key the 4 committed standalone fixtures (listed in FIXTURES below)
+ * from raw close_reason strings to the canonical CloseReason union (ops.5). For every ClosedTrade
+ * and TradeEvidence: closeReasonRaw = the original raw, closeReason = classifyCloseReason(raw).
+ * Idempotent (always derived from raw). Bumps manifest opsReadContractVersion → ops.5, re-checksums,
+ * self-validates via loadSnapshot. Note: 2026-06-16-to-18-extended is re-derived separately via
+ * scripts/make-extended-fixture.ts (which deep-clones the re-keyed 2026-06-18-real-all).
  *
  * Usage: pnpm --config.verify-deps-before-run=false exec tsx scripts/migrate-fixtures-ops5.ts
  */

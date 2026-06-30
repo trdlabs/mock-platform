@@ -25,7 +25,7 @@ function makeApp(tokens: string[] = []) {
 }
 
 describe('ops read http app', () => {
-  it('GET /ops/discover returns ops.4 200 (reachability for office)', async () => {
+  it('GET /ops/discover returns ops.5 200 (reachability for office)', async () => {
     const res = await makeApp().request('/ops/discover');
     expect(res.status).toBe(200);
     expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.5');
@@ -69,7 +69,7 @@ describe('ops read http app', () => {
     expect(res.status).toBe(400);
     expect((await res.json() as { code: string }).code).toBe('missing_trade_ids');
   });
-  it('discover advertises ops.4 and the trade-evidence resource', async () => {
+  it('discover advertises ops.5 and the trade-evidence resource', async () => {
     const res = await makeApp().request('/ops/discover');
     const body = await res.json() as { opsContractVersion: string; resources: { name: string }[] };
     expect(body.opsContractVersion).toBe('ops.5');
