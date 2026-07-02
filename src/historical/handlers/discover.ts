@@ -37,10 +37,17 @@ export function buildHistoricalDiscover(bundle: SnapshotBundle): HistoricalCapab
     ? [...new Set([...Object.keys(hist.barsBySymbolAndTimeframe), ...Object.keys(hist.rowsBySymbol ?? {})])].sort()
     : [];
 
+  // Native CanonicalRowV2 rows are minute-grain (the /historical/rows resource), so advertise 1m
+  // whenever any symbol has native rows — even when bars only cover 1h/1d — so a `SYMBOL:1m` dataset
+  // resolves against them. Mirrors the real platform, where minute rows back a 1m dataset.
+  const hasNativeRows = hist
+    ? Object.values(hist.rowsBySymbol ?? {}).some((rows) => rows.length > 0)
+    : false;
   const presentTimeframes = hist
-    ? ([...new Set(
-        Object.values(hist.barsBySymbolAndTimeframe).flatMap((byTf) => Object.keys(byTf)),
-      )].sort() as Timeframe[])
+    ? ([...new Set([
+        ...Object.values(hist.barsBySymbolAndTimeframe).flatMap((byTf) => Object.keys(byTf)),
+        ...(hasNativeRows ? ['1m'] : []),
+      ])].sort() as Timeframe[])
     : ALL_TIMEFRAMES;
 
   return {
