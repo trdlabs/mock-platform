@@ -4,8 +4,8 @@ import { OPS_READ_CONTRACT_VERSION } from '../../contract/ops-read/version.js';
 import { MAX_PAGE } from '../pagination.js';
 
 const RESOURCES: readonly OpsResourceDescriptor[] = [
-  { name: 'runs', supportedFilters: ['status', 'mode', 'symbol', 'cursor'],
-    pagination: { cursor: true, maxPageItems: MAX_PAGE }, fields: ['runId', 'mode', 'status', 'strategy', 'startedAtMs', 'finishedAtMs', 'lastSeenMs', 'symbols'] },
+  { name: 'runs', supportedFilters: ['status', 'mode', 'symbol', 'bundleId', 'cursor'],
+    pagination: { cursor: true, maxPageItems: MAX_PAGE }, fields: ['runId', 'mode', 'status', 'strategy', 'bundleId', 'startedAtMs', 'finishedAtMs', 'lastSeenMs', 'symbols'] },
   // mock hardcodes excludesReconcile:true (no reconcile data to toggle), so it advertises no filters.
   { name: 'summary', supportedFilters: [], pagination: null, fields: ['runId', 'closedTrades', 'winratePct', 'pnlUsd'] },
   { name: 'trades', supportedFilters: ['runId', 'cursor'], pagination: { cursor: true, maxPageItems: MAX_PAGE }, fields: ['tradeId', 'runId', 'symbol', 'side', 'realizedPnl'] },

@@ -25,7 +25,7 @@ beforeAll(() => {
   const manifest = {
     ref: 'test', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
     versions: {
-      snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
+      snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
       researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
       exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
     },
@@ -47,7 +47,7 @@ describe('loadSnapshot', () => {
     writeFileSync(join(bad, 'manifest.json'), JSON.stringify({
       ref: 'bad', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
       versions: {
-        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
+        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
         researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
         exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
       },
@@ -72,7 +72,7 @@ describe('loadSnapshot', () => {
     writeFileSync(join(bad, 'manifest.json'), JSON.stringify({
       ref: 'leak', createdAtMs: 1, bundleRef: 'ops/bundle.json', checksumsRef: 'checksums.json',
       versions: {
-        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
+        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
         researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
         exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
       },

@@ -3,7 +3,7 @@
   "createdAtMs": 1781988420288,
   "versions": {
     "snapshotSchemaVersion": "snapshot.1",
-    "opsReadContractVersion": "ops.5",
+    "opsReadContractVersion": "ops.6",
     "researchReadContractVersion": "research.1",
     "analysisContractVersion": "ops.4",
     "exporterVersion": "fixture-trim.1",

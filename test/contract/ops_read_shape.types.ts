@@ -15,6 +15,8 @@ type Assert<T extends true> = T;
 type _BotRunRecord = Assert<Mutual<BotRunRecord, {
   readonly runId: string; readonly mode: BotMode; readonly status: BotRunStatus;
   readonly strategy: BotRunStrategyRef;
+  /** ops.6: bot_bundle id (== candidateId при промоушене); null для in-repo ботов. */
+  readonly bundleId: string | null;
   readonly startedAtMs: number; readonly finishedAtMs: number | null;
   readonly lastSeenMs: number; readonly symbols: readonly string[];
 }>>;
