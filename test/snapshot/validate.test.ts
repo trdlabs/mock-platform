@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { assertValidManifest, assertValidBundle } from '../../src/snapshot/validate.js';
 
 const versions = {
-  snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
+  snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
   researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
   exporterVersion: 'e', sourcePlatformCommit: 'x', redactionPolicyVersion: 'r',
 };

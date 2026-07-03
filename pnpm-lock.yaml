@@ -18,8 +18,8 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@trading-platform/sdk':
-        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.0/trading-platform-sdk-0.9.0.tgz
-        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.0/trading-platform-sdk-0.9.0.tgz
+        specifier: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.3/trading-platform-sdk-0.9.3.tgz
+        version: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.3/trading-platform-sdk-0.9.3.tgz
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -500,9 +500,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.0/trading-platform-sdk-0.9.0.tgz':
-    resolution: {integrity: sha512-5NDwpFNETqykgj4MWgfEWxLdWuNHB+WZaXNy47t7932yJ7kLEprlBLOUBIkuji6o4CVxIsQspSC3N7Zynu2ElQ==, tarball: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.0/trading-platform-sdk-0.9.0.tgz}
-    version: 0.9.0
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.3/trading-platform-sdk-0.9.3.tgz':
+    resolution: {integrity: sha512-7aUX/B1PgnTDIlS0H1QWzBZOYub/YA3n1qCIhpn2i/IgNYcVy7vG0m4E2igoA+InkrNOnySf0aktC8vyprV1Dw==, tarball: https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.3/trading-platform-sdk-0.9.3.tgz}
+    version: 0.9.3
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1354,7 +1354,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.0':
     optional: true
 
-  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.0/trading-platform-sdk-0.9.0.tgz':
+  '@trading-platform/sdk@https://github.com/alexnikolskiy/trading-platform-sdk/releases/download/sdk-v0.9.3/trading-platform-sdk-0.9.3.tgz':
     dependencies:
       ajv: 8.20.0
       decimal.js: 10.6.0

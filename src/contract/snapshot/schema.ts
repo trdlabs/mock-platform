@@ -76,6 +76,8 @@ export const BUNDLE_SCHEMA = {
           properties: { name: { type: 'string' }, version: { type: 'string' } } },
         startedAtMs: { type: 'number' }, finishedAtMs: { type: ['number', 'null'] },
         lastSeenMs: { type: 'number' }, symbols: { type: 'array', items: { type: 'string' } },
+        // ops.6: не required — снапшоты до bundleId валидны (reader нормализует к null).
+        bundleId: { type: ['string', 'null'] },
       },
     },
     closedTrade: {

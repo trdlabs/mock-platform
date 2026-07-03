@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { buildDiscover } from '../../src/ops/handlers/discover.js';
 
 describe('buildDiscover', () => {
-  it('declares ops.5, read-only capabilities, and a closed resource catalog', () => {
+  it('declares ops.6, read-only capabilities, and a closed resource catalog', () => {
     const d = buildDiscover();
-    expect(d.opsContractVersion).toBe('ops.5');
+    expect(d.opsContractVersion).toBe('ops.6');
     expect(d.capabilities).toEqual({
       readOnly: true, execution: false, credentials: false, ingestion: false, mutation: false,
     });

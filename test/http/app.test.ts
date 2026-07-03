@@ -4,7 +4,7 @@ import type { LoadedSnapshot } from '../../src/snapshot/loader.js';
 
 const snap = {
   dir: '.', manifest: { ref: 't', createdAtMs: 1, bundleRef: 'b', checksumsRef: 'c',
-    versions: { snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.5',
+    versions: { snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
       researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
       exporterVersion: 'e', sourcePlatformCommit: 'x', redactionPolicyVersion: 'r' } },
   bundle: {
@@ -25,10 +25,10 @@ function makeApp(tokens: string[] = []) {
 }
 
 describe('ops read http app', () => {
-  it('GET /ops/discover returns ops.5 200 (reachability for office)', async () => {
+  it('GET /ops/discover returns ops.6 200 (reachability for office)', async () => {
     const res = await makeApp().request('/ops/discover');
     expect(res.status).toBe(200);
-    expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.5');
+    expect((await res.json() as { opsContractVersion: string }).opsContractVersion).toBe('ops.6');
   });
   it('GET /ops/runs?mode=live returns a page with strategy.name present', async () => {
     const res = await makeApp().request('/ops/runs?mode=live');
@@ -69,10 +69,10 @@ describe('ops read http app', () => {
     expect(res.status).toBe(400);
     expect((await res.json() as { code: string }).code).toBe('missing_trade_ids');
   });
-  it('discover advertises ops.5 and the trade-evidence resource', async () => {
+  it('discover advertises ops.6 and the trade-evidence resource', async () => {
     const res = await makeApp().request('/ops/discover');
     const body = await res.json() as { opsContractVersion: string; resources: { name: string }[] };
-    expect(body.opsContractVersion).toBe('ops.5');
+    expect(body.opsContractVersion).toBe('ops.6');
     expect(body.resources.some((r) => r.name === 'trade-evidence')).toBe(true);
   });
 });

@@ -53,13 +53,15 @@ export function createApp(deps: AppDeps) {
     isOpsError(result) ? c.json(result, httpStatus(result)) : c.json(result as object, 200);
 
   const runsFilter = (c: Context): RunsFilter => {
-    const f: { mode?: string; status?: string; symbol?: string } = {};
+    const f: { mode?: string; status?: string; symbol?: string; bundleId?: string } = {};
     const mode = c.req.query('mode');
     const status = c.req.query('status');
     const symbol = c.req.query('symbol');
+    const bundleId = c.req.query('bundleId');
     if (mode !== undefined) f.mode = mode;
     if (status !== undefined) f.status = status;
     if (symbol !== undefined) f.symbol = symbol;
+    if (bundleId !== undefined) f.bundleId = bundleId;
     return f;
   };
 
