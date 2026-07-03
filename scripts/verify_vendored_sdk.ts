@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 
 // The ops-read contract version the mock's fixtures + compat gate pin. The SDK is the source of truth;
 // this constant is the value we REQUIRE the release SDK to carry (drift = hard fail).
-const EXPECTED_OPS_VERSION = 'ops.5';
+const EXPECTED_OPS_VERSION = 'ops.6';
 // The SDK is consumed as a public GitHub release-asset tarball (no longer vendored locally).
 const SPEC_RE = /^https:\/\/github\.com\/.+\/releases\/download\/sdk-v\d+\.\d+\.\d+\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz$/;
 
