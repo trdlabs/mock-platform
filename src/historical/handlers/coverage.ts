@@ -9,8 +9,11 @@ export function handleHistoricalCoverage(bundle: SnapshotBundle, asOf: number): 
   }
 
   const hist = bundle.historical;
-  const symbols = Object.keys(hist.barsBySymbolAndTimeframe).sort();
-  const entries = symbols.flatMap((symbol) => {
+  const barSymbols = Object.keys(hist.barsBySymbolAndTimeframe);
+  const rowSymbols = Object.keys(hist.rowsBySymbol ?? {});
+  const symbols = [...new Set([...barSymbols, ...rowSymbols])].sort();
+
+  const entriesFromBars = symbols.flatMap((symbol) => {
     const byTf = hist.barsBySymbolAndTimeframe[symbol] ?? {};
     return Object.keys(byTf)
       .sort()
@@ -27,7 +30,32 @@ export function handleHistoricalCoverage(bundle: SnapshotBundle, asOf: number): 
       });
   });
 
+  const native1mEntries = rowSymbols.flatMap((symbol) => {
+    const rows = hist.rowsBySymbol?.[symbol] ?? [];
+    if (rows.length === 0) return [];
+    return [{
+      symbol,
+      timeframe: '1m' as Timeframe,
+      fromMs: rows[0]!.minute_ts,
+      toMs: rows[rows.length - 1]!.minute_ts,
+      barCount: rows.length,
+      availability: 'available' as const,
+    }];
+  });
+
+  const native1mSymbols = new Set(native1mEntries.map((entry) => entry.symbol));
+  const entries = [
+    ...entriesFromBars.filter((entry) => !(entry.timeframe === '1m' && native1mSymbols.has(entry.symbol))),
+    ...native1mEntries,
+  ].sort((a, b) => a.symbol.localeCompare(b.symbol) || a.timeframe.localeCompare(b.timeframe));
+
   const presentTimeframes = [...new Set(entries.map((e) => e.timeframe))].sort() as Timeframe[];
 
-  return { entries, symbols, timeframes: presentTimeframes.length > 0 ? presentTimeframes : ALL_TIMEFRAMES, availability: 'available', asOf };
+  return {
+    entries,
+    symbols,
+    timeframes: presentTimeframes.length > 0 ? presentTimeframes : ALL_TIMEFRAMES,
+    availability: 'available',
+    asOf,
+  };
 }
