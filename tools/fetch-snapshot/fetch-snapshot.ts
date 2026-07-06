@@ -118,11 +118,35 @@ interface FundingEntry { tsMs: number; symbol: string; rate: number; }
 interface OIEntry { tsMs: number; symbol: string; openInterestUsd: number; }
 interface LiqEntry { tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number; }
 
+/** Mirrors @trading-platform/sdk CanonicalRowV2 — inlined so tools/ stays import-clean. */
+interface CanonicalRowV2 {
+  schema_version: 2;
+  minute_ts: number;
+  symbol: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover: number;
+  oi_total_usd: number | null;
+  funding_rate: number | null;
+  liq_long_usd: number | null;
+  liq_short_usd: number | null;
+  has_oi: boolean;
+  has_funding: boolean;
+  has_liquidations: boolean;
+  taker_buy_volume_usd: number | null;
+  taker_sell_volume_usd: number | null;
+  has_taker_flow: boolean;
+}
+
 interface HistoricalBundle {
   barsBySymbolAndTimeframe: Record<string, Record<string, Bar[]>>;
   fundingBySymbol: Record<string, FundingEntry[]>;
   openInterestBySymbol: Record<string, OIEntry[]>;
   liquidationsBySymbol: Record<string, LiqEntry[]>;
+  rowsBySymbol?: Record<string, CanonicalRowV2[]>;
 }
 
 // ──────────────────────────────────────────────────
@@ -591,6 +615,36 @@ export interface MinuteRow {
   funding: number | null;
   liqLong: number | null;
   liqShort: number | null;
+  takerBuy: number | null;
+  takerSell: number | null;
+}
+
+export function minuteRowToCanonicalRow(row: MinuteRow): CanonicalRowV2 {
+  const hasOi = row.oi !== null;
+  const hasFunding = row.funding !== null;
+  const hasLiq = (row.liqLong ?? 0) > 0 || (row.liqShort ?? 0) > 0;
+  const hasTaker = row.takerBuy !== null || row.takerSell !== null;
+  return {
+    schema_version: 2,
+    minute_ts: row.ts,
+    symbol: row.sym,
+    open: row.open,
+    high: row.high,
+    low: row.low,
+    close: row.close,
+    volume: row.volume,
+    turnover: row.close * row.volume,
+    oi_total_usd: row.oi,
+    funding_rate: row.funding,
+    liq_long_usd: row.liqLong,
+    liq_short_usd: row.liqShort,
+    has_oi: hasOi,
+    has_funding: hasFunding,
+    has_liquidations: hasLiq,
+    taker_buy_volume_usd: row.takerBuy,
+    taker_sell_volume_usd: row.takerSell,
+    has_taker_flow: hasTaker,
+  };
 }
 
 async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
@@ -629,7 +683,8 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
   for (const { path, sv } of partFiles) {
     const columns = sv === 2
       ? ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
-          'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd']
+          'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd',
+          'taker_buy_volume_usd', 'taker_sell_volume_usd']
       : ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
           'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd'];
 
@@ -660,6 +715,8 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
         funding: toNumOrNull(r['funding_rate']),
         liqLong: toNumOrNull(r['liq_long_usd']),
         liqShort: toNumOrNull(r['liq_short_usd']),
+        takerBuy: sv === 2 ? toNumOrNull(r['taker_buy_volume_usd']) : null,
+        takerSell: sv === 2 ? toNumOrNull(r['taker_sell_volume_usd']) : null,
       });
     }
   }
@@ -681,10 +738,12 @@ export function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): Hist
   const fundingBySymbol: Record<string, FundingEntry[]> = {};
   const openInterestBySymbol: Record<string, OIEntry[]> = {};
   const liquidationsBySymbol: Record<string, LiqEntry[]> = {};
+  const rowsBySymbol: Record<string, CanonicalRowV2[]> = {};
 
   for (const [sym, rows] of Object.entries(bySymbol)) {
     rows.sort((a, b) => a.ts - b.ts);
     barsBySymbolAndTimeframe[sym] = {};
+    rowsBySymbol[sym] = rows.map(minuteRowToCanonicalRow);
 
     for (const tf of TIMEFRAMES) {
       const tfMs = TF_MS[tf] ?? 3_600_000;
@@ -733,11 +792,17 @@ export function aggregateHistorical(bySymbol: Record<string, MinuteRow[]>): Hist
     liquidationsBySymbol[sym] = liqEntries;
   }
 
-  return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol };
+  return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol, rowsBySymbol };
 }
 
 function emptyHistorical(): HistoricalBundle {
-  return { barsBySymbolAndTimeframe: {}, fundingBySymbol: {}, openInterestBySymbol: {}, liquidationsBySymbol: {} };
+  return {
+    barsBySymbolAndTimeframe: {},
+    fundingBySymbol: {},
+    openInterestBySymbol: {},
+    liquidationsBySymbol: {},
+    rowsBySymbol: {},
+  };
 }
 
 // ──────────────────────────────────────────────────
@@ -914,6 +979,7 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
       fundingBySymbol: { ...oldHist.fundingBySymbol },
       openInterestBySymbol: { ...oldHist.openInterestBySymbol },
       liquidationsBySymbol: { ...oldHist.liquidationsBySymbol },
+      rowsBySymbol: { ...(oldHist.rowsBySymbol ?? {}) },
     };
     for (const [sym, tfMap] of Object.entries(newHist.barsBySymbolAndTimeframe)) {
       if (!mh.barsBySymbolAndTimeframe[sym]) mh.barsBySymbolAndTimeframe[sym] = {};
@@ -938,6 +1004,14 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
         (mh[field] as Record<string, unknown[]>)[sym] = [...byKey.values()].sort(
           (a, b) => (a.tsMs - b.tsMs) || String(a.side ?? '').localeCompare(String(b.side ?? '')),
         );
+      }
+    }
+    if (newHist.rowsBySymbol) {
+      for (const [sym, rows] of Object.entries(newHist.rowsBySymbol)) {
+        const old = mh.rowsBySymbol?.[sym] ?? [];
+        const byTs = new Map(old.map((r) => [r.minute_ts, r]));
+        for (const r of rows) byTs.set(r.minute_ts, r);
+        mh.rowsBySymbol![sym] = [...byTs.values()].sort((a, b) => a.minute_ts - b.minute_ts);
       }
     }
     merged['historical'] = mh;
@@ -967,11 +1041,14 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
   const tradeCount = Object.values((bundle['tradesByRun'] as Record<string, ClosedTrade[]>)).reduce((s, v) => s + v.length, 0);
   const symCount = hist ? Object.keys(hist.barsBySymbolAndTimeframe).length : 0;
   const barCount = hist ? Object.values(hist.barsBySymbolAndTimeframe).reduce((s, tfMap) => s + Object.values(tfMap).reduce((ss, bars) => ss + bars.length, 0), 0) : 0;
+  const rowCount = hist?.rowsBySymbol
+    ? Object.values(hist.rowsBySymbol).reduce((s, rows) => s + rows.length, 0)
+    : 0;
 
   console.log(`\n[snapshot] ref=${ref}`);
   console.log(`  runs:         ${runCount}`);
   console.log(`  trades:       ${tradeCount}`);
-  console.log(`  hist symbols: ${symCount}, bars: ${barCount}`);
+  console.log(`  hist symbols: ${symCount}, bars: ${barCount}, native 1m rows: ${rowCount}`);
   console.log(`  bundle size:  ${bundleBytes.length.toLocaleString()} bytes`);
   console.log(`  checksum:     ${checksum.slice(0, 16)}…`);
 

@@ -7,6 +7,7 @@ This repository is part of the `trdlabs` trading ecosystem.
 - API, MCP, SDK, or contract changes
 - rollout, migration, or cross-repo validation
 - local development, Docker, running the full ecosystem stack, or mock-platform data intervals
+- fetching a new VPS snapshot and making it the ecosystem default fixture
 
 **Read order when triggered:**
 1. `../control-center/repos.yaml`
@@ -14,6 +15,7 @@ This repository is part of the `trdlabs` trading ecosystem.
 3. `../control-center/repos/trading-mock-platform.md`
 4. `../control-center/docs/operations/local-development.md` when starting or debugging the local stack
 5. `../control-center/docs/operations/mock-platform-data.md` when historical intervals (1m/1h/1d) or mock fixtures matter
+6. `../control-center/docs/operations/mock-platform-snapshot-rollout.md` when ingesting a VPS slice or changing the default fixture across repos
 
 If `../control-center` is absent (standalone clone), use local repo docs only.
 
@@ -68,6 +70,14 @@ pnpm verify:no-forbidden-deps    # нет запрещённых зависим�
 pnpm verify:no-secrets           # нет секретов
 pnpm check                       # typecheck + contract-isolation + test
 pnpm check:ci                    # check + no-forbidden-deps + no-secrets
+
+# VPS → snapshot (isolated deps — see tools/fetch-snapshot/README.md):
+cd tools/fetch-snapshot && pnpm install --ignore-workspace && cd ../..
+pnpm fetch:snapshot -- --help
+pnpm make:fixture -- --source data/snapshots/<raw-ref> --out data/snapshots/fixtures/<name> --top 11
+
+# After fetch: skill `mock-snapshot-default-rollout` → ../control-center/scripts/rollout-mock-default-snapshot.sh
+# SSOT: ../control-center/ecosystem-defaults.yaml — do not patch lab env by hand.
 ```
 
 ## Правила для агента (границы — критично)
