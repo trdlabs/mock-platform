@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectTopSymbols, filterBundleToSymbols } from '../../scripts/make-fixture.js';
+import { selectTopSymbols, filterBundleToSymbols, filterHistoricalToSymbols } from '../../scripts/make-fixture.js';
 
 const sample = {
   runs: [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }],
@@ -54,5 +54,16 @@ describe('filterBundleToSymbols', () => {
   it('copies global health/coverage/replay unchanged', () => {
     expect(out.coverage).toEqual(sample.coverage);
     expect(out.replay).toEqual(sample.replay);
+  });
+});
+
+describe('filterHistoricalToSymbols', () => {
+  const out = filterHistoricalToSymbols(structuredClone(sample), ['A', 'B']);
+  it('keeps all runs and trades', () => {
+    expect(out.runs.map((r) => r.id)).toEqual(['r1', 'r2', 'r3']);
+    expect(Object.values(out.tradesByRun).flat()).toHaveLength(8);
+  });
+  it('filters only historical maps', () => {
+    expect(Object.keys(out.historical!.fundingBySymbol).sort()).toEqual(['A', 'B']);
   });
 });

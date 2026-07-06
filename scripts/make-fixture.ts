@@ -10,6 +10,8 @@
  *     --source data/snapshots/2026-06-12-vps \
  *     --out    data/snapshots/fixtures/2026-06-12-real-top5 \
  *     --top    5
+ *     --trim-scope historical   # default for VPS rollouts: trim parquet/1m only, keep all paper ops
+ *     --trim-scope all          # legacy demo: trim ops + historical to top-N symbols
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -92,6 +94,61 @@ const pickKeys = <V>(obj: { readonly [k: string]: V }, keep: Set<string>): Recor
 const pickSyms = <V>(obj: { readonly [k: string]: V }, syms: Set<string>): Record<string, V> =>
   Object.fromEntries(Object.entries(obj).filter(([k]) => syms.has(k)));
 
+function filterHistoricalMaps(
+  h: NonNullable<BundleLike['historical']>,
+  symbols: string[],
+): RawHistorical {
+  const syms = new Set(symbols);
+  return {
+    barsBySymbolAndTimeframe: pickSyms(
+      Object.fromEntries(
+        Object.entries(h.barsBySymbolAndTimeframe).map(([sym, tfs]) => [
+          sym,
+          Object.fromEntries(Object.entries(tfs).map(([tf, bars]) => [tf, [...bars]])),
+        ]),
+      ),
+      syms,
+    ),
+    fundingBySymbol: pickSyms(
+      Object.fromEntries(Object.entries(h.fundingBySymbol).map(([k, v]) => [k, [...v]])),
+      syms,
+    ),
+    openInterestBySymbol: pickSyms(
+      Object.fromEntries(Object.entries(h.openInterestBySymbol).map(([k, v]) => [k, [...v]])),
+      syms,
+    ),
+    liquidationsBySymbol: pickSyms(
+      Object.fromEntries(Object.entries(h.liquidationsBySymbol).map(([k, v]) => [k, [...v]])),
+      syms,
+    ),
+    ...(h.rowsBySymbol
+      ? {
+          rowsBySymbol: pickSyms(
+            Object.fromEntries(Object.entries(h.rowsBySymbol).map(([k, v]) => [k, [...v]])),
+            syms,
+          ),
+        }
+      : {}),
+  };
+}
+
+/** Trim only historical maps; preserve full paper/live ops (runs, trades, evidence). */
+export function filterHistoricalToSymbols<B extends BundleLike>(bundle: B, symbols: string[]): B {
+  if (!bundle.historical) return bundle;
+  return {
+    ...bundle,
+    historical: filterHistoricalMaps(bundle.historical, symbols),
+  } as unknown as B;
+}
+
+const tradeIdsFrom = (tradesByRun: Record<string, Array<{ tradeId?: string }>>): Set<string> =>
+  new Set(
+    Object.values(tradesByRun)
+      .flat()
+      .map((t) => t.tradeId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
 /**
  * Generic over B so the return type mirrors the caller's concrete bundle shape.
  * When called with a structuredClone of an `as const` literal, B has explicit
@@ -109,38 +166,12 @@ export function filterBundleToSymbols<B extends BundleLike>(bundle: B, symbols: 
   const retained = new Set(Object.keys(tradesByRun));
 
   const h = bundle.historical;
-  const historical: RawHistorical | undefined = h
-    ? {
-        barsBySymbolAndTimeframe: pickSyms(
-          Object.fromEntries(
-            Object.entries(h.barsBySymbolAndTimeframe).map(([sym, tfs]) => [
-              sym,
-              Object.fromEntries(Object.entries(tfs).map(([tf, bars]) => [tf, [...bars]])),
-            ]),
-          ),
-          syms,
-        ),
-        fundingBySymbol: pickSyms(
-          Object.fromEntries(Object.entries(h.fundingBySymbol).map(([k, v]) => [k, [...v]])),
-          syms,
-        ),
-        openInterestBySymbol: pickSyms(
-          Object.fromEntries(Object.entries(h.openInterestBySymbol).map(([k, v]) => [k, [...v]])),
-          syms,
-        ),
-        liquidationsBySymbol: pickSyms(
-          Object.fromEntries(Object.entries(h.liquidationsBySymbol).map(([k, v]) => [k, [...v]])),
-          syms,
-        ),
-        ...(h.rowsBySymbol
-          ? {
-              rowsBySymbol: pickSyms(
-                Object.fromEntries(Object.entries(h.rowsBySymbol).map(([k, v]) => [k, [...v]])),
-                syms,
-              ),
-            }
-          : {}),
-      }
+  const historical = h ? filterHistoricalMaps(h, symbols) : undefined;
+
+  const tradeEvidenceRaw = bundle.tradeEvidenceByTrade as Record<string, unknown> | undefined;
+  const keptTradeIds = tradeIdsFrom(tradesByRun);
+  const tradeEvidenceByTrade = tradeEvidenceRaw
+    ? Object.fromEntries(Object.entries(tradeEvidenceRaw).filter(([id]) => keptTradeIds.has(id)))
     : undefined;
 
   return {
@@ -151,6 +182,7 @@ export function filterBundleToSymbols<B extends BundleLike>(bundle: B, symbols: 
     decisionsByRun: pickKeys(bundle.decisionsByRun, retained),
     analysisByRun: pickKeys(bundle.analysisByRun, retained),
     researchByRun: pickKeys(bundle.researchByRun, retained),
+    ...(tradeEvidenceByTrade !== undefined ? { tradeEvidenceByTrade } : {}),
     ...(historical !== undefined ? { historical } : {}),
   } as unknown as B;
 }
@@ -215,10 +247,17 @@ function arg(name: string, fallback?: string): string {
   throw new Error(`missing required --${name}`);
 }
 
+function argMaybe(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
+  return undefined;
+}
+
 function main(): void {
   const source = arg('source');
   const out = arg('out');
   const topN = Number(arg('top', '5'));
+  const trimScope = argMaybe('trim-scope') ?? 'historical';
 
   const srcManifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as {
     versions: Record<string, string>;
@@ -226,7 +265,10 @@ function main(): void {
   const srcBundle = JSON.parse(readFileSync(join(source, 'ops', 'bundle.json'), 'utf8')) as RawBundle;
 
   const symbols = selectTopSymbols(srcBundle, topN);
-  const filtered = filterBundleToSymbols(srcBundle, symbols);
+  const filtered =
+    trimScope === 'all'
+      ? filterBundleToSymbols(srcBundle, symbols)
+      : filterHistoricalToSymbols(srcBundle, symbols);
   const fixture: RawBundle = filtered.historical
     ? { ...filtered, historical: normalizeHistorical(filtered.historical) }
     : filtered;
@@ -255,8 +297,12 @@ function main(): void {
   loadSnapshot(out);
 
   const tradeCount = Object.values(fixture.tradesByRun).reduce((s, a) => s + a.length, 0);
+  const evidenceCount = Object.keys(
+    (fixture.tradeEvidenceByTrade as Record<string, unknown> | undefined) ?? {},
+  ).length;
+  const scopeNote = trimScope === 'all' ? 'ops+historical trimmed' : 'historical trimmed, full paper ops kept';
   console.log(
-    `fixture '${ref}' written: ${symbols.length} symbols [${symbols.join(', ')}], ${tradeCount} trades, ${fixture.runs.length} run(s)`,
+    `fixture '${ref}' written (${scopeNote}): ${symbols.length} hist symbols [${symbols.join(', ')}], ${tradeCount} trades, ${evidenceCount} trade evidence, ${fixture.runs.length} run(s)`,
   );
 }
 
