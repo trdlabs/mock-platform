@@ -12,6 +12,8 @@ function makeRow(overrides: Partial<MinuteRow> & { ts: number; sym: string }): M
     funding: null,
     liqLong: null,
     liqShort: null,
+    takerBuy: null,
+    takerSell: null,
     ...overrides,
   };
 }
@@ -125,6 +127,56 @@ describe('aggregateHistorical', () => {
         expect(e).toHaveProperty('side');
         expect(e).toHaveProperty('sizeUsd');
       }
+    });
+  });
+
+  describe('rowsBySymbol', () => {
+    it('emits CanonicalRowV2 per minute with turnover and has_* flags', () => {
+      const rows: MinuteRow[] = [
+        makeRow({
+          ts: 1_000_000,
+          sym: 'BTCUSDT',
+          close: 2,
+          volume: 50,
+          oi: 1_000,
+          funding: 0.0001,
+          liqLong: 100,
+          liqShort: 0,
+          takerBuy: 10,
+          takerSell: 20,
+        }),
+      ];
+      const result = aggregateHistorical({ BTCUSDT: rows });
+      const canonical = result.rowsBySymbol!['BTCUSDT']!;
+      expect(canonical).toHaveLength(1);
+      expect(canonical[0]).toMatchObject({
+        schema_version: 2,
+        minute_ts: 1_000_000,
+        symbol: 'BTCUSDT',
+        close: 2,
+        volume: 50,
+        turnover: 100,
+        oi_total_usd: 1_000,
+        funding_rate: 0.0001,
+        liq_long_usd: 100,
+        liq_short_usd: 0,
+        has_oi: true,
+        has_funding: true,
+        has_liquidations: true,
+        taker_buy_volume_usd: 10,
+        taker_sell_volume_usd: 20,
+        has_taker_flow: true,
+      });
+    });
+
+    it('sets has_taker_flow false when taker columns are absent', () => {
+      const rows: MinuteRow[] = [makeRow({ ts: 1_000_000, sym: 'ETHUSDT' })];
+      const result = aggregateHistorical({ ETHUSDT: rows });
+      expect(result.rowsBySymbol!['ETHUSDT']![0]).toMatchObject({
+        has_taker_flow: false,
+        taker_buy_volume_usd: null,
+        taker_sell_volume_usd: null,
+      });
     });
   });
 
