@@ -650,6 +650,7 @@ export function minuteRowToCanonicalRow(row: MinuteRow): CanonicalRowV2 {
 async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
   type AsyncBuffer = { byteLength: number; slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer> };
   const { parquetReadObjects } = await import('hyparquet');
+  const { compressors } = await import('hyparquet-compressors');
   const { asyncBufferFromFile } = (await import('hyparquet/src/node.js')) as { asyncBufferFromFile: (path: string) => Promise<AsyncBuffer> };
 
   const symSet = new Set(symbols.map((s) => s.toUpperCase()));
@@ -689,7 +690,7 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
           'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd'];
 
     const file = await asyncBufferFromFile(path);
-    const rows = await parquetReadObjects({ file, columns }) as Record<string, unknown>[];
+    const rows = await parquetReadObjects({ file, columns, compressors }) as Record<string, unknown>[];
 
     for (const r of rows) {
       const ts = typeof r['minute_ts'] === 'bigint' ? Number(r['minute_ts']) : Number(r['minute_ts']);
@@ -1069,7 +1070,7 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
     checksumsRef: checksumRef,
     versions: {
       snapshotSchemaVersion: 'snapshot.1',
-      opsReadContractVersion: 'ops.5',
+      opsReadContractVersion: 'ops.6',
       researchReadContractVersion: 'research.1',
       analysisContractVersion: 'ops.4',
       exporterVersion: 'fetch-snapshot.1',

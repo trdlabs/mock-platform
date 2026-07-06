@@ -19,6 +19,7 @@ const FIXTURES = [
   'historical-golden',
   '2026-06-18-real-all',
   '2026-06-16-to-18-extended',
+  '2026-06-22-to-2026-06-28-vps',
 ];
 
 const FIXTURE_BUNDLE_ID = 'pc_fixture-bundle-0001';
