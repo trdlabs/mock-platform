@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { SnapshotManifest } from '../contract/snapshot/manifest.js';
 import type { SnapshotBundle } from '../contract/snapshot/bundle.js';
 import { verifyChecksum } from './checksums.js';
+import { decodeBundleFileBytes } from './bundle-io.js';
 import { assertSnapshotCompatible } from './compat.js';
 import { assertValidManifest, assertValidBundle } from './validate.js';
 import { scanForSecrets } from '../safety/secret-scan.js';
@@ -29,7 +30,7 @@ export function loadSnapshot(dir: string): LoadedSnapshot {
   if (!expected) throw new Error(`checksums.json missing entry for ${manifest.bundleRef}`);
   verifyChecksum(manifest.bundleRef, bundleBuf, expected);
 
-  const bundleStr = bundleBuf.toString('utf8');
+  const bundleStr = decodeBundleFileBytes(bundleBuf, manifest.bundleRef).toString('utf8');
   scanForSecrets(manifest.bundleRef, bundleStr);
   const bundleRaw = JSON.parse(bundleStr) as unknown;
   assertValidBundle(bundleRaw);

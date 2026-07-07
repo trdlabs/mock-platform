@@ -36,6 +36,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { bundleRefForByteLength, encodeBundleFileBytes } from '../../src/snapshot/bundle-io.js';
 import * as fsp from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -650,6 +651,7 @@ export function minuteRowToCanonicalRow(row: MinuteRow): CanonicalRowV2 {
 async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
   type AsyncBuffer = { byteLength: number; slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer> };
   const { parquetReadObjects } = await import('hyparquet');
+  const { compressors } = await import('hyparquet-compressors');
   const { asyncBufferFromFile } = (await import('hyparquet/src/node.js')) as { asyncBufferFromFile: (path: string) => Promise<AsyncBuffer> };
 
   const symSet = new Set(symbols.map((s) => s.toUpperCase()));
@@ -689,7 +691,7 @@ async function readParquetDir(localRoot: string, symbols: string[], tsFrom: numb
           'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd'];
 
     const file = await asyncBufferFromFile(path);
-    const rows = await parquetReadObjects({ file, columns }) as Record<string, unknown>[];
+    const rows = await parquetReadObjects({ file, columns, compressors }) as Record<string, unknown>[];
 
     for (const r of rows) {
       const ts = typeof r['minute_ts'] === 'bigint' ? Number(r['minute_ts']) : Number(r['minute_ts']);
@@ -1030,11 +1032,12 @@ function mergeWithExisting(newBundle: Record<string, unknown>, outDir: string): 
 function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boolean): void {
   const outDir = join(SNAPSHOT_DIR, ref);
   const opsDir = join(outDir, 'ops');
-  const bundleRef = 'ops/bundle.json';
   const checksumRef = 'checksums.json';
 
   const bundleBytes = Buffer.from(JSON.stringify(bundle, null, 2), 'utf8');
-  const checksum = sha256Hex(bundleBytes);
+  const bundleRef = bundleRefForByteLength(bundleBytes.length);
+  const fileBytes = encodeBundleFileBytes(bundleBytes, bundleRef);
+  const checksum = sha256Hex(fileBytes);
 
   const hist = bundle['historical'] as HistoricalBundle | undefined;
   const runCount = (bundle['runs'] as BotRun[]).length;
@@ -1049,7 +1052,10 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
   console.log(`  runs:         ${runCount}`);
   console.log(`  trades:       ${tradeCount}`);
   console.log(`  hist symbols: ${symCount}, bars: ${barCount}, native 1m rows: ${rowCount}`);
-  console.log(`  bundle size:  ${bundleBytes.length.toLocaleString()} bytes`);
+  console.log(`  bundle size:  ${bundleBytes.length.toLocaleString()} bytes (json)`);
+  if (bundleRef.endsWith('.gz')) {
+    console.log(`  stored as:    ${bundleRef} (${fileBytes.length.toLocaleString()} bytes gzip)`);
+  }
   console.log(`  checksum:     ${checksum.slice(0, 16)}…`);
 
   if (dryRun) {
@@ -1069,7 +1075,7 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
     checksumsRef: checksumRef,
     versions: {
       snapshotSchemaVersion: 'snapshot.1',
-      opsReadContractVersion: 'ops.5',
+      opsReadContractVersion: 'ops.6',
       researchReadContractVersion: 'research.1',
       analysisContractVersion: 'ops.4',
       exporterVersion: 'fetch-snapshot.1',
@@ -1078,7 +1084,7 @@ function writeSnapshot(ref: string, bundle: Record<string, unknown>, dryRun: boo
     },
   };
 
-  writeFileSync(join(opsDir, 'bundle.json'), bundleBytes);
+  writeFileSync(join(opsDir, bundleRef.replace('ops/', '')), fileBytes);
   writeFileSync(join(outDir, checksumRef), JSON.stringify({ [bundleRef]: checksum }, null, 2));
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 

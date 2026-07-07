@@ -1,0 +1,15 @@
+{
+  "ref": "2026-06-22-to-2026-06-28-vps",
+  "createdAtMs": 1783413155435,
+  "bundleRef": "ops/bundle.json.gz",
+  "checksumsRef": "checksums.json",
+  "versions": {
+    "snapshotSchemaVersion": "snapshot.1",
+    "opsReadContractVersion": "ops.6",
+    "researchReadContractVersion": "research.1",
+    "analysisContractVersion": "ops.4",
+    "exporterVersion": "fetch-snapshot.1",
+    "sourcePlatformCommit": "vps-fetch-2026-07-07T0833Z",
+    "redactionPolicyVersion": "redact.1"
+  }
+}
