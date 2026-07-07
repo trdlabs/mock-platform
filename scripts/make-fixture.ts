@@ -141,7 +141,9 @@ export function filterHistoricalToSymbols<B extends BundleLike>(bundle: B, symbo
   } as unknown as B;
 }
 
-const tradeIdsFrom = (tradesByRun: Record<string, Array<{ tradeId?: string }>>): Set<string> =>
+const tradeIdsFrom = (
+  tradesByRun: Record<string, ReadonlyArray<{ tradeId?: string }>>,
+): Set<string> =>
   new Set(
     Object.values(tradesByRun)
       .flat()
@@ -169,7 +171,9 @@ export function filterBundleToSymbols<B extends BundleLike>(bundle: B, symbols: 
   const historical = h ? filterHistoricalMaps(h, symbols) : undefined;
 
   const tradeEvidenceRaw = bundle.tradeEvidenceByTrade as Record<string, unknown> | undefined;
-  const keptTradeIds = tradeIdsFrom(tradesByRun);
+  const keptTradeIds = tradeIdsFrom(
+    tradesByRun as Record<string, ReadonlyArray<{ tradeId?: string }>>,
+  );
   const tradeEvidenceByTrade = tradeEvidenceRaw
     ? Object.fromEntries(Object.entries(tradeEvidenceRaw).filter(([id]) => keptTradeIds.has(id)))
     : undefined;
