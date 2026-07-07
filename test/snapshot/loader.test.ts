@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256Hex } from '../../src/snapshot/checksums.js';
+import { encodeBundleFileBytes, BUNDLE_GZIP_REF } from '../../src/snapshot/bundle-io.js';
 import { loadSnapshot } from '../../src/snapshot/loader.js';
 
 let dir: string;
@@ -78,5 +79,32 @@ describe('loadSnapshot', () => {
       },
     }));
     expect(() => loadSnapshot(bad)).toThrow(/bundle failed schema/i);
+  });
+  it('loads a gzip-compressed bundle when bundleRef ends with .gz', () => {
+    const gzDir = mkdtempSync(join(tmpdir(), 'snap-gz-'));
+    mkdirSync(join(gzDir, 'ops'), { recursive: true });
+    const bundle = {
+      runs: [], tradesByRun: {}, eventsByRun: {}, decisionsByRun: {}, tradeEvidenceByTrade: {},
+      runtimeHealth: { entries: [], asOf: 1 },
+      marketHealth: { status: 'ok', diagnostics: {}, streamAgeMs: null, availability: 'available', asOf: 1 },
+      executionHealth: { status: 'ok', recentCounts: {}, lastEventMs: null, availability: 'unavailable', asOf: 1 },
+      coverage: { entries: [], availability: 'available', asOf: 1 },
+      analysisByRun: {}, researchByRun: {}, replay: { frames: [] },
+    };
+    const jsonBytes = Buffer.from(JSON.stringify(bundle), 'utf8');
+    const gzBytes = encodeBundleFileBytes(jsonBytes, BUNDLE_GZIP_REF);
+    writeFileSync(join(gzDir, 'ops', 'bundle.json.gz'), gzBytes);
+    writeFileSync(join(gzDir, 'checksums.json'), JSON.stringify({ [BUNDLE_GZIP_REF]: sha256Hex(gzBytes) }));
+    writeFileSync(join(gzDir, 'manifest.json'), JSON.stringify({
+      ref: 'gz', createdAtMs: 1, bundleRef: BUNDLE_GZIP_REF, checksumsRef: 'checksums.json',
+      versions: {
+        snapshotSchemaVersion: 'snapshot.1', opsReadContractVersion: 'ops.6',
+        researchReadContractVersion: 'research.1', analysisContractVersion: 'ops.4',
+        exporterVersion: 'exp.1', sourcePlatformCommit: 'abc', redactionPolicyVersion: 'redact.1',
+      },
+    }));
+    const snap = loadSnapshot(gzDir);
+    expect(snap.manifest.bundleRef).toBe(BUNDLE_GZIP_REF);
+    expect(snap.bundle.runs).toEqual([]);
   });
 });

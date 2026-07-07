@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sha256Hex } from '../src/snapshot/checksums.js';
+import { decodeBundleFileBytes, encodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 
 const FIXTURES = [
@@ -28,8 +29,16 @@ type Obj = Record<string, unknown>;
 
 function migrateOne(ref: string): void {
   const root = join(process.cwd(), 'data/snapshots/fixtures', ref);
-  const bundlePath = join(root, 'ops', 'bundle.json');
-  const bundle = JSON.parse(readFileSync(bundlePath, 'utf8')) as { runs?: Obj[] };
+  const mp = join(root, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(mp, 'utf8')) as {
+    bundleRef: string;
+    versions: Record<string, string>;
+  };
+  const bundlePath = join(root, manifest.bundleRef);
+  const fileBuf = readFileSync(bundlePath);
+  const bundle = JSON.parse(
+    decodeBundleFileBytes(fileBuf, manifest.bundleRef).toString('utf8'),
+  ) as { runs?: Obj[] };
 
   let tagged = false;
   for (const run of bundle.runs ?? []) {
@@ -41,12 +50,14 @@ function migrateOne(ref: string): void {
     }
   }
 
-  const bundleStr = JSON.stringify(bundle);
-  writeFileSync(bundlePath, bundleStr);
-  writeFileSync(join(root, 'checksums.json'), JSON.stringify({ 'ops/bundle.json': sha256Hex(bundleStr) }, null, 2));
+  const jsonBuf = Buffer.from(JSON.stringify(bundle), 'utf8');
+  const outBuf = encodeBundleFileBytes(jsonBuf, manifest.bundleRef);
+  writeFileSync(bundlePath, outBuf);
+  writeFileSync(
+    join(root, 'checksums.json'),
+    JSON.stringify({ [manifest.bundleRef]: sha256Hex(outBuf) }, null, 2),
+  );
 
-  const mp = join(root, 'manifest.json');
-  const manifest = JSON.parse(readFileSync(mp, 'utf8')) as { versions: Record<string, string> };
   manifest.versions['opsReadContractVersion'] = 'ops.6';
   writeFileSync(mp, JSON.stringify(manifest, null, 2));
 
