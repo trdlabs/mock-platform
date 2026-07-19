@@ -19,16 +19,29 @@ export function handleRows(
   const { fromMs, toMs, limit } = params;
   const symbols = params.symbols ?? [];
 
-  // Concatenate rows per requested symbol, in request order. Unknown symbols
-  // contribute nothing (readRows returns []) — no match yields an empty page.
+  // Gather rows for every requested symbol. Unknown symbols contribute nothing
+  // (readRows returns []) — no match yields an empty page.
+  //
+  // The symbol list is de-duplicated first: platform resolves the request through a Set,
+  // so `symbols=BTC,BTC` selects one symbol rather than emitting each row twice. Without
+  // this the duplicated rows also break the strict global order below, since two rows can
+  // then share both minute_ts and symbol.
   const rows: CanonicalRowV2[] = [];
-  for (const symbol of symbols) {
+  for (const symbol of new Set(symbols)) {
     rows.push(...readRows(bundle, {
       symbol,
       ...(fromMs !== undefined ? { fromMs } : {}),
       ...(toMs !== undefined ? { toMs } : {}),
     }));
   }
+
+  // A multi-symbol response is one globally ordered stream — (minute_ts ASC, symbol ASC) —
+  // not a per-symbol concatenation echoing the caller's symbol order (control-center audit
+  // P1-1; platform storage/historical/http/historical-http-app). Sorting happens BEFORE
+  // pagination so the order is a property of the whole result set, not of a single page.
+  rows.sort((a, b) =>
+    a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0),
+  );
 
   try {
     return paginate(rows, cursor, limit, {

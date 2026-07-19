@@ -4,10 +4,20 @@
 //   (b) the platform historical golden (byte-identity source of truth).
 //
 //  HARD : sha256(local vendored copy) === recorded .sha256 (tamper detect).
-//  SOFT : if the platform repo is reachable, byte-compare the vendored copy against the
-//         live platform source (source-drift detect). Platform unreachable / artifact
-//         absent => warning + skip the cross-repo check (the local sha stays hard).
-import { readFileSync, existsSync } from 'node:fs';
+//  SOFT : if the source repo is reachable, byte-compare the vendored copy against the
+//         live source (source-drift detect). Repo unreachable / artifact absent =>
+//         warning + skip the cross-repo check (the local sha stays hard).
+//
+// Canonical harness source: the SDK repo (trdlabs/sdk, conformance/historical.conformance.ts),
+// per control-center initiative mock-contract-parity item 5 — NOT the platform copy it was
+// originally vendored from. The golden fixture's byte-identity source of truth remains the
+// platform repo (test/fixtures/historical-golden/MANIFEST.json), which the SDK does not own.
+//
+// Delivery note: the harness is consumed as a vendored, import-free artifact rather than
+// through the `@trdlabs/sdk` npm package, because the npm release carrying this harness
+// revision does not exist yet (latest published: 0.10.0, predates SDK commit c7e3064).
+// Migrating the pin to npm is a follow-up blocked on that release.
+import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
@@ -27,6 +37,8 @@ function fail(msg) {
   process.exit(1);
 }
 
+// Harness source (SDK repo) and golden source (platform repo) are now distinct.
+const SDK = process.env.SDK_REPO ?? resolve(repoRoot, '../sdk');
 const PLATFORM = process.env.PLATFORM_REPO ?? '/home/alexxxnikolskiy/projects/trading-platform';
 
 // === harness ===
@@ -41,27 +53,39 @@ if (localSha !== recordedSha) {
   fail(`vendored harness sha256 mismatch (local tamper):\n  recorded ${recordedSha}\n  actual   ${localSha}`);
 }
 
-// --- SOFT: cross-repo byte-identity against the platform source artifact ---
-const TSCONFIG = join(PLATFORM, 'packages/sdk/conformance/tsconfig.historical.json');
-const ARTIFACT = join(PLATFORM, 'dist/packages/sdk/conformance/historical.conformance.js');
+// --- SOFT: cross-repo byte-identity against the SDK source artifact ---
+const TSCONFIG = join(SDK, 'tsconfig.conformance.json');
+// Built into a scratch outDir with sourcemaps off: the vendored copy has no sibling
+// .map file, so a sourceMappingURL comment in it would make every consumer (vitest,
+// node) warn about an unreadable map. Byte-identity is asserted against THIS shape.
+const BUILD_DIR = join(repoRoot, 'node_modules/.cache/harness-sync');
+const ARTIFACT = join(BUILD_DIR, 'historical.conformance.js');
 
-if (!existsSync(PLATFORM) || !existsSync(TSCONFIG)) {
-  console.warn(`verify_harness_sync: WARN — platform repo unreachable (${PLATFORM}); harness cross-repo check skipped`);
+if (!existsSync(SDK) || !existsSync(TSCONFIG)) {
+  // The repo is genuinely absent (standalone clone / CI without the sibling checked out).
+  // Nothing can be compared, and that is not a drift signal — skip, keeping the local sha hard.
+  console.warn(`verify_harness_sync: WARN — sdk repo unreachable (${SDK}); harness cross-repo check skipped`);
 } else {
+  // Once the source repo IS present, every remaining outcome is a hard failure. A stale
+  // artifact from an earlier run would otherwise let a broken or drifted SDK pass as
+  // "byte-identity OK", so the build dir is removed first and the comparison only ever
+  // runs against output produced by a compile that just succeeded.
+  rmSync(BUILD_DIR, { recursive: true, force: true });
   try {
-    execFileSync('npx', ['tsc', '-p', TSCONFIG], { cwd: PLATFORM, stdio: 'ignore' });
-  } catch {
-    console.warn('verify_harness_sync: WARN — platform harness recompile failed; using existing artifact if present');
+    execFileSync('npx', ['tsc', '-p', TSCONFIG, '--sourceMap', 'false', '--outDir', BUILD_DIR], { cwd: SDK, stdio: 'pipe' });
+  } catch (e) {
+    const detail = [e.stdout?.toString(), e.stderr?.toString()].filter(Boolean).join('\n').trim();
+    fail(`sdk harness failed to compile (${TSCONFIG}); cannot verify byte-identity`
+      + `${detail ? `\n${detail}` : ''}`);
   }
   if (!existsSync(ARTIFACT)) {
-    console.warn(`verify_harness_sync: WARN — platform artifact absent (${ARTIFACT}); harness cross-repo check skipped`);
-  } else {
-    const platformBuf = readFileSync(ARTIFACT);
-    if (sha256(platformBuf) !== localSha) {
-      fail(`vendored harness drifted from platform source:\n  platform sha ${sha256(platformBuf)}\n  vendored sha ${localSha}\n  re-vendor: cp ${ARTIFACT} ${VENDORED} && sha256 -> .sha256`);
-    }
-    console.log('verify_harness_sync: harness cross-repo byte-identity OK');
+    fail(`sdk harness compiled but produced no artifact at ${ARTIFACT}`);
   }
+  const sdkBuf = readFileSync(ARTIFACT);
+  if (sha256(sdkBuf) !== localSha) {
+    fail(`vendored harness drifted from sdk source:\n  sdk sha      ${sha256(sdkBuf)}\n  vendored sha ${localSha}\n  re-vendor: cp ${ARTIFACT} ${VENDORED} && sha256 -> .sha256`);
+  }
+  console.log('verify_harness_sync: harness cross-repo byte-identity OK (source: sdk)');
 }
 
 // === golden ===

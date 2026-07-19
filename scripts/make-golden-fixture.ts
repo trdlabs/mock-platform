@@ -6,9 +6,10 @@
  *
  * The platform golden is the byte-identity source of truth for the real==mock
  * conformance contract. The rows are copied verbatim into
- * `historical.rowsBySymbol.BTCUSDT`; the rest of the bundle is a minimal but
- * schema-valid ops surface (empty runs / health "unavailable") so the fixture
- * exercises only the historical-rows path.
+ * `historical.rowsBySymbol.BTCUSDT`; a second, derived symbol (see SECOND_SYMBOL)
+ * shares the same minute_ts grid so multi-symbol ordering is falsifiable. The rest
+ * of the bundle is a minimal but schema-valid ops surface (empty runs / health
+ * "unavailable") so the fixture exercises only the historical-rows path.
  *
  * Authoring-side tool (like make-fixture / fetch-snapshot): deterministic, no
  * network, reads a fixed input and writes a fixed output.
@@ -38,7 +39,53 @@ import type { CanonicalRowV2 } from '../src/contract/historical-read/dto.js';
 
 const REF = 'historical-golden';
 const SYMBOL = 'BTCUSDT';
+/**
+ * A second, derived symbol so the fixture can exercise *multi-symbol* semantics —
+ * chiefly the global (minute_ts ASC, symbol ASC) total order the platform guarantees
+ * (control-center audit P1-1). A single-symbol fixture cannot falsify ordering, so the
+ * shared conformance harness reports it as a skip rather than a pass.
+ *
+ * Two constraints shape the choice:
+ *   - it must sort AFTER 'BTCUSDT', because /historical/discover sorts symbols and the
+ *     harness probes symbols[0] for the golden byte-identity comparison. A symbol
+ *     sorting first (e.g. 'AAAUSDT') would silently retarget that check;
+ *   - its minute_ts values are the golden ones verbatim, so every timestamp ties across
+ *     the two symbols and the tie-break on symbol is actually exercised.
+ *
+ * The BTCUSDT rows stay byte-identical to the platform golden; these are additive.
+ */
+const SECOND_SYMBOL = 'ETHUSDT';
 const ASOF = 1735776000000; // first golden minute; deterministic, no Date.now() in health surfaces
+
+/** Deterministic, self-contained companion rows: same minute_ts grid as the golden,
+ *  integer-valued OHLCV so JSON round-trips exactly (no float artifacts). */
+function deriveSecondSymbolRows(golden: readonly CanonicalRowV2[]): readonly CanonicalRowV2[] {
+  return golden.map((g, i) => {
+    const base = 3800 + i;
+    const volume = 1000 + i;
+    return {
+      schema_version: 2,
+      minute_ts: g.minute_ts,
+      symbol: SECOND_SYMBOL,
+      open: base,
+      high: base + 5,
+      low: base - 5,
+      close: base + 2,
+      volume,
+      turnover: (base + 2) * volume,
+      oi_total_usd: 200_000_000 + i,
+      funding_rate: 0.0001,
+      liq_long_usd: 10_000 + i,
+      liq_short_usd: 5_000 + i,
+      has_oi: true,
+      has_funding: true,
+      has_liquidations: true,
+      taker_buy_volume_usd: 40_000 + i,
+      taker_sell_volume_usd: 30_000 + i,
+      has_taker_flow: true,
+    };
+  });
+}
 
 // Default to the vendored, committed copy so the fixture reproduces in CI without the
 // platform repo. PLATFORM_GOLDEN re-points at the live platform MANIFEST for re-vendoring.
@@ -50,7 +97,10 @@ const VENDORED_GOLDEN = resolve(
 
 /** A minimal ops bundle that satisfies BUNDLE_SCHEMA: empty collections, health surfaces
  *  reported "unavailable" (this is a historical-only fixture). */
-function buildBundle(rows: readonly CanonicalRowV2[]): SnapshotBundle {
+function buildBundle(
+  rows: readonly CanonicalRowV2[],
+  secondRows: readonly CanonicalRowV2[],
+): SnapshotBundle {
   return {
     runs: [],
     tradesByRun: {},
@@ -69,7 +119,7 @@ function buildBundle(rows: readonly CanonicalRowV2[]): SnapshotBundle {
       fundingBySymbol: {},
       openInterestBySymbol: {},
       liquidationsBySymbol: {},
-      rowsBySymbol: { [SYMBOL]: rows },
+      rowsBySymbol: { [SYMBOL]: rows, [SECOND_SYMBOL]: secondRows },
     },
   };
 }
@@ -81,7 +131,8 @@ function main(): void {
     throw new Error(`platform golden at ${goldenPath} is not a non-empty array of rows`);
   }
 
-  const bundle = buildBundle(rows);
+  const secondRows = deriveSecondSymbolRows(rows);
+  const bundle = buildBundle(rows, secondRows);
   const bundleStr = JSON.stringify(bundle);
 
   const hits = scanText(bundleStr);
@@ -114,7 +165,10 @@ function main(): void {
   // Self-validation: re-run the full loader gate chain on what we just wrote.
   loadSnapshot(out);
 
-  console.log(`golden fixture '${REF}' written: ${rows.length} ${SYMBOL} rows → ${out}`);
+  console.log(
+    `golden fixture '${REF}' written: ${rows.length} ${SYMBOL} rows `
+    + `+ ${secondRows.length} derived ${SECOND_SYMBOL} rows → ${out}`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

@@ -39,4 +39,25 @@ describe('golden snapshot fixture (fixtures/historical-golden)', () => {
     // serialized equality is the strict byte-identity check
     expect(JSON.stringify(rows)).toBe(JSON.stringify(golden));
   });
+
+  // The derived companion symbol exists so multi-symbol ordering is falsifiable; it is
+  // additive and must not disturb the BTCUSDT byte-identity asserted above.
+  describe('derived companion symbol (multi-symbol ordering coverage)', () => {
+    const eth = readRows(snap.bundle, { symbol: 'ETHUSDT' });
+
+    it('exposes exactly two symbols with rows', () => {
+      expect(Object.keys(snap.bundle.historical!.rowsBySymbol!).sort()).toEqual(['BTCUSDT', 'ETHUSDT']);
+    });
+
+    it('shares the golden minute_ts grid so every timestamp ties across symbols', () => {
+      expect(eth).toHaveLength(30);
+      expect(eth.map((r) => r.minute_ts)).toEqual(golden.map((r) => r.minute_ts));
+    });
+
+    // discover sorts symbols, and the harness probes symbols[0] for golden byte-identity —
+    // the companion must sort after BTCUSDT or it would silently retarget that check.
+    it('sorts after BTCUSDT', () => {
+      expect('ETHUSDT' > 'BTCUSDT').toBe(true);
+    });
+  });
 });

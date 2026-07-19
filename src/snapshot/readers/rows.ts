@@ -14,8 +14,11 @@ export function readRows(bundle: SnapshotBundle, f: RowsFilter): readonly Canoni
   if (hist === undefined) return [];
   // historical.2 reads rowsBySymbol; pre-rows snapshots (per-kind only) are synthesized on the fly.
   const rows = hist.rowsBySymbol?.[f.symbol] ?? synthesizeRowsFromPerKind(hist, f.symbol);
+  // Range is HALF-OPEN [fromMs, toMs) — platform parity
+  // (storage/historical/reader/query_filters: ts < from || ts >= to → skip). An inclusive
+  // upper bound double-counts the boundary bar across adjacent walk-forward folds.
   return rows.filter((r) =>
     (f.fromMs === undefined || r.minute_ts >= f.fromMs) &&
-    (f.toMs === undefined || r.minute_ts <= f.toMs),
+    (f.toMs === undefined || r.minute_ts < f.toMs),
   );
 }

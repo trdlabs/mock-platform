@@ -75,16 +75,25 @@ Run all of it locally with `pnpm check:ci`.
 `GET /historical/rows?symbols=<csv>&fromMs=&toMs=&limit=&cursor=` → `PageEnvelope<CanonicalRowV2>`.
 Each item is a **full canonical row** (contract `historical.2`): OHLCV + turnover, open interest, funding,
 liquidations, and the taker triplet. `symbols` is a comma-separated list; `fromMs`/`toMs` bound the window
-(`toMs` optional → open-ended); `limit` + opaque `cursor` page the result (unknown symbols yield an empty
-page, not an error). This is additive — the older bars-keyed endpoints stay as they were.
+as a **half-open range `[fromMs, toMs)`** — the bar at `minute_ts == toMs` is not returned and `[t, t)` is
+empty (`toMs` optional → open-ended); `limit` + opaque `cursor` page the result (unknown symbols yield an
+empty page, not an error). A multi-symbol request is served as one **globally ordered** stream —
+`(minute_ts ASC, symbol ASC)` across all pages, not a per-symbol concatenation in request order. Both match
+platform semantics (control-center audit P0-1 / P1-1). This is additive — the older bars-keyed endpoints
+stay as they were.
 
 **Golden fixture.** `data/snapshots/fixtures/historical-golden` is a deterministic snapshot covering all
-canonical kinds, generated from the platform `MANIFEST` by `scripts/make-golden-fixture.ts`.
+canonical kinds, generated from the platform `MANIFEST` by `scripts/make-golden-fixture.ts`. It carries two
+symbols: the 30 verbatim golden `BTCUSDT` rows (the byte-identity source of truth) plus a derived
+`ETHUSDT` companion on the same minute grid, so multi-symbol ordering is falsifiable rather than skipped.
 
 **Conformance (mock == real).** The shared conformance harness is vendored under
-`test/conformance/_vendored/` and kept in lockstep with the upstream copy by `verify:harness-sync` (wired
-into `check:ci`). Running it against this mock and against the real platform over the golden fixture proves
+`test/conformance/_vendored/`, sourced from the **SDK repo** (`trdlabs/sdk`,
+`conformance/historical.conformance.ts`) and kept in lockstep by `verify:harness-sync` (wired into
+`check:ci`). Running it against this mock and against the real platform over the golden fixture proves
 **byte-identity** (30 rows) — the mock's `/historical/rows` response is indistinguishable from the real one.
+The harness reports checks a dataset cannot exercise as *skips*; the mock's conformance test fails on any
+non-empty skip list, so coverage cannot shrink silently.
 
 ## Surface B — Research Read (trading-lab, stdio MCP gateway)
 

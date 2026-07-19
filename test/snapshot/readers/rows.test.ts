@@ -42,8 +42,27 @@ describe('readRows', () => {
     expect(readRows(bundle, { symbol: 'BTCUSDT' })).toHaveLength(3);
   });
 
-  it('narrows the result with fromMs/toMs bounds (inclusive)', () => {
-    const out = readRows(bundle, { symbol: 'BTCUSDT', fromMs: t1, toMs: t1 });
+  // Range is half-open [fromMs, toMs) — platform parity with
+  // storage/historical/reader/query_filters (ts < from || ts >= to → skip).
+  // An inclusive upper bound double-counts the boundary bar across adjacent
+  // walk-forward folds (control-center audit P0-1).
+  it('adjacent bars: [t0, t1) contains only the fromMs bar', () => {
+    const out = readRows(bundle, { symbol: 'BTCUSDT', fromMs: t0, toMs: t1 });
+    expect(out.map((r) => r.minute_ts)).toEqual([t0]);
+  });
+
+  it('excludes the bar at minute_ts === toMs', () => {
+    const out = readRows(bundle, { symbol: 'BTCUSDT', fromMs: t0, toMs: t2 });
+    expect(out.map((r) => r.minute_ts)).toEqual([t0, t1]);
+    expect(out.map((r) => r.minute_ts)).not.toContain(t2);
+  });
+
+  it('degenerate range [t, t) is empty', () => {
+    expect(readRows(bundle, { symbol: 'BTCUSDT', fromMs: t1, toMs: t1 })).toEqual([]);
+  });
+
+  it('includes the bar at minute_ts === fromMs (lower bound stays inclusive)', () => {
+    const out = readRows(bundle, { symbol: 'BTCUSDT', fromMs: t1, toMs: t2 });
     expect(out.map((r) => r.minute_ts)).toEqual([t1]);
   });
 
