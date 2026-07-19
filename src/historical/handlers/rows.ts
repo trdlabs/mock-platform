@@ -21,8 +21,13 @@ export function handleRows(
 
   // Gather rows for every requested symbol. Unknown symbols contribute nothing
   // (readRows returns []) — no match yields an empty page.
+  //
+  // The symbol list is de-duplicated first: platform resolves the request through a Set,
+  // so `symbols=BTC,BTC` selects one symbol rather than emitting each row twice. Without
+  // this the duplicated rows also break the strict global order below, since two rows can
+  // then share both minute_ts and symbol.
   const rows: CanonicalRowV2[] = [];
-  for (const symbol of symbols) {
+  for (const symbol of new Set(symbols)) {
     rows.push(...readRows(bundle, {
       symbol,
       ...(fromMs !== undefined ? { fromMs } : {}),

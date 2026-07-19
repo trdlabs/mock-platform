@@ -17,7 +17,7 @@
 // through the `@trdlabs/sdk` npm package, because the npm release carrying this harness
 // revision does not exist yet (latest published: 0.10.0, predates SDK commit c7e3064).
 // Migrating the pin to npm is a follow-up blocked on that release.
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
@@ -62,22 +62,30 @@ const BUILD_DIR = join(repoRoot, 'node_modules/.cache/harness-sync');
 const ARTIFACT = join(BUILD_DIR, 'historical.conformance.js');
 
 if (!existsSync(SDK) || !existsSync(TSCONFIG)) {
+  // The repo is genuinely absent (standalone clone / CI without the sibling checked out).
+  // Nothing can be compared, and that is not a drift signal — skip, keeping the local sha hard.
   console.warn(`verify_harness_sync: WARN — sdk repo unreachable (${SDK}); harness cross-repo check skipped`);
 } else {
+  // Once the source repo IS present, every remaining outcome is a hard failure. A stale
+  // artifact from an earlier run would otherwise let a broken or drifted SDK pass as
+  // "byte-identity OK", so the build dir is removed first and the comparison only ever
+  // runs against output produced by a compile that just succeeded.
+  rmSync(BUILD_DIR, { recursive: true, force: true });
   try {
-    execFileSync('npx', ['tsc', '-p', TSCONFIG, '--sourceMap', 'false', '--outDir', BUILD_DIR], { cwd: SDK, stdio: 'ignore' });
-  } catch {
-    console.warn('verify_harness_sync: WARN — sdk harness recompile failed; using existing artifact if present');
+    execFileSync('npx', ['tsc', '-p', TSCONFIG, '--sourceMap', 'false', '--outDir', BUILD_DIR], { cwd: SDK, stdio: 'pipe' });
+  } catch (e) {
+    const detail = [e.stdout?.toString(), e.stderr?.toString()].filter(Boolean).join('\n').trim();
+    fail(`sdk harness failed to compile (${TSCONFIG}); cannot verify byte-identity`
+      + `${detail ? `\n${detail}` : ''}`);
   }
   if (!existsSync(ARTIFACT)) {
-    console.warn(`verify_harness_sync: WARN — sdk artifact absent (${ARTIFACT}); harness cross-repo check skipped`);
-  } else {
-    const sdkBuf = readFileSync(ARTIFACT);
-    if (sha256(sdkBuf) !== localSha) {
-      fail(`vendored harness drifted from sdk source:\n  sdk sha      ${sha256(sdkBuf)}\n  vendored sha ${localSha}\n  re-vendor: cp ${ARTIFACT} ${VENDORED} && sha256 -> .sha256`);
-    }
-    console.log('verify_harness_sync: harness cross-repo byte-identity OK (source: sdk)');
+    fail(`sdk harness compiled but produced no artifact at ${ARTIFACT}`);
   }
+  const sdkBuf = readFileSync(ARTIFACT);
+  if (sha256(sdkBuf) !== localSha) {
+    fail(`vendored harness drifted from sdk source:\n  sdk sha      ${sha256(sdkBuf)}\n  vendored sha ${localSha}\n  re-vendor: cp ${ARTIFACT} ${VENDORED} && sha256 -> .sha256`);
+  }
+  console.log('verify_harness_sync: harness cross-repo byte-identity OK (source: sdk)');
 }
 
 // === golden ===

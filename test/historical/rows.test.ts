@@ -118,6 +118,24 @@ describe('handleRows: global multi-symbol ordering', () => {
     expect(JSON.stringify(reverse.items)).toBe(JSON.stringify(forward.items));
   });
 
+  // Platform resolves the requested symbols through a Set, so a repeated symbol selects
+  // it once instead of emitting its rows twice.
+  it('de-duplicates repeated symbols instead of duplicating their rows', () => {
+    const page = handleRows(bundle, { symbols: ['AAAUSDT', 'AAAUSDT'], limit: 200 }, ASOF);
+    if (!isPage(page)) throw new Error('expected a page');
+    expect(page.items).toHaveLength(N);
+    const keys = page.items.map((r) => `${r.minute_ts}|${r.symbol}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('a repeated symbol does not perturb the global order of the others', () => {
+    const withDup = handleRows(bundle, { symbols: ['CCCUSDT', 'AAAUSDT', 'CCCUSDT', 'BBBUSDT'], limit: 200 }, ASOF);
+    const clean = handleRows(bundle, { symbols: REVERSED, limit: 200 }, ASOF);
+    if (!isPage(withDup) || !isPage(clean)) throw new Error('expected pages');
+    assertGloballyOrdered(withDup.items);
+    expect(JSON.stringify(withDup.items)).toBe(JSON.stringify(clean.items));
+  });
+
   it('half-open range applies to every symbol in a multi-symbol request', () => {
     const page = handleRows(
       bundle,
