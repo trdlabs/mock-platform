@@ -4,7 +4,7 @@
 
 **Goal:** Ship the `trading-mock-platform` half of the `wfo-extended-fixture` initiative — a fixture integrity/coverage validator (item 3), a committed 42-day native-1m T2 fixture (item 1), and the code-default `MOCK_SNAPSHOT_REF` fix (item 5).
 
-**Architecture:** Declared coverage lives in a versioned **sidecar** (`coverage.json`) read only by a new CI script `verify_fixtures.ts`; the runtime loader, `snapshot.1` schema, and `compat.ts` are untouched. The validator compares *declared* (authored from fetch intent) against *actual* (computed from the bundle) on a unified minute grid shared by all five symbols. The T2 fixture is produced by a new authoring tool, validated in enforce mode, and committed under `data/snapshots/wfo/` so the demo image is unchanged.
+**Architecture:** Declared coverage lives in a versioned **sidecar** (`coverage.json`) read only by a new CI script `verify_fixtures.ts`; the runtime loader, `snapshot.1` schema, and `compat.ts` are untouched. The validator compares *declared* (authored from fetch intent) against *actual* (computed from the bundle) on a unified minute grid shared by all five symbols. The T2 fixture is produced by a new authoring tool from a single read-only VPS pull, validated in enforce mode, and committed under `data/snapshots/wfo/` so the demo image is unchanged.
 
 **Tech Stack:** TypeScript (NodeNext ESM, `.js` import specifiers), `ajv` (already a dep), `vitest`, `tsx`. Spec: [`docs/superpowers/specs/2026-07-21-wfo-extended-fixture-design.md`](../specs/2026-07-21-wfo-extended-fixture-design.md).
 
@@ -14,17 +14,15 @@
 - No manifest schema / loader / `compat.ts` / `snapshot.1` changes. Coverage is a sidecar.
 - Declared coverage fields are **never** derived from bundle content (anti-tautology): the authoring tool takes them as required CLI flags; the validator only reads and compares, never writes.
 - Frozen budgets (in the sidecar, as integers): `totalGapBudgetMinutes = 6480`, `maxConsecutiveGapMinutes = 1440`.
-- `MINUTE_MS = 60_000`; all `minute_ts` and `period` bounds are minute-aligned; the window is half-open `[fromMs, toMs)`.
-- T2 fixture symbols: exactly 5 = `HUSDT` + top-4 by 1m turnover (excl. HUSDT, ties `symbol ASC`).
+- `MINUTE_MS = 60_000`, `DAY_MS = 86_400_000`; all `minute_ts` / `period` bounds minute-aligned; window half-open `[fromMs, toMs)`.
+- T2 symbols: exactly 5 = `HUSDT` + top-4 by summed 1m turnover (excl. HUSDT, ties `symbol ASC`).
 - T2 lives at `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/`; the Dockerfile only `COPY`s `data/snapshots/fixtures`, so T2 stays out of the image.
-- VPS access is read-only; no secrets printed or committed; commit the fixture only after `verify:fixtures` passes in enforce mode; on any blocker (no ranking aggregate, no conforming 42-day window) **stop and report**, never substitute synthetic data.
+- VPS access is read-only; no secrets printed or committed; commit the fixture only after `verify:fixtures` passes in enforce mode; on any blocker (no ranking data, no conforming 42-day window) **stop and report**, never substitute synthetic data.
 - Item 5's code-default points at the **T1** SSOT fixture `fixtures/2026-06-22-to-2026-06-28-vps`, **not** T2.
 
 ---
 
 ### Task 1: Coverage sidecar schema + document validation
-
-Pure structural validation of `coverage.json` (`fixture-coverage.1`). No bundle access yet.
 
 **Files:**
 - Create: `scripts/verify_fixtures.ts`
@@ -168,7 +166,7 @@ import { checkFixture, totalGap, maxConsecutiveGap } from '../../scripts/verify_
 
 const M = 60_000;
 const from = M;                 // 60_000
-const to = M + 10 * M;          // 11 grid slots: minutes 1..10
+const to = M + 10 * M;          // 10 grid slots: minutes 1..10
 const cov = {
   schemaVersion: 'fixture-coverage.1' as const,
   period: { fromMs: from, toMs: to },
@@ -176,18 +174,17 @@ const cov = {
   totalGapBudgetMinutes: 2,
   maxConsecutiveGapMinutes: 1,
 };
-// a fully-populated grid: minutes from..to-M, all 5 symbols identical
-const full = (): Record<string, { minute_ts: number }[]> => {
-  const g = Array.from({ length: (to - from) / M }, (_, i) => from + i * M);
-  return Object.fromEntries(cov.symbols.map((s) => [s, g.map((t) => ({ minute_ts: t }))]));
-};
+const gridArr = (): number[] => Array.from({ length: (to - from) / M }, (_, i) => from + i * M);
+// full unified grid: every minute, all 5 symbols identical
+const full = (): Record<string, { minute_ts: number }[]> =>
+  Object.fromEntries(cov.symbols.map((s) => [s, gridArr().map((t) => ({ minute_ts: t }))]));
 
 describe('gap math', () => {
   it('totalGap counts missing minutes', () => {
     expect(totalGap([from, from + M], from, to)).toBe(8); // 10 slots, 2 present
   });
   it('maxConsecutiveGap includes leading and trailing edges', () => {
-    // present only the middle minute → leading 4, trailing 5
+    // present only minute index 4 → leading 4, trailing 5
     expect(maxConsecutiveGap([from + 4 * M], from, to)).toBe(5);
   });
 });
@@ -196,13 +193,17 @@ describe('checkFixture', () => {
   it('passes a full unified grid within budget', () => {
     expect(checkFixture(cov, full())).toEqual([]);
   });
-  it('fails a symbol-set mismatch', () => {
+  it('fails a symbol-set mismatch (missing key)', () => {
     const r = full(); delete r.E;
     expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
   });
-  it('fails an empty symbol', () => {
-    const r = full(); r.E = [];
+  it('fails an extra empty key (must NOT be silently filtered)', () => {
+    const r = { ...full(), X: [] as { minute_ts: number }[] };
     expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
+  });
+  it('fails an empty declared symbol', () => {
+    const r = full(); r.E = [];
+    expect(checkFixture(cov, r).some((e) => e.includes('empty rows'))).toBe(true);
   });
   it('fails bars-only (no rows at all)', () => {
     expect(checkFixture(cov, undefined).some((e) => e.includes('symbols mismatch'))).toBe(true);
@@ -221,10 +222,9 @@ describe('checkFixture', () => {
   });
   it('fails non-identical grids', () => {
     const r = full(); r.B = r.B.slice(0, -1);
-    // B now shorter → symbol set still equal but grids differ
-    expect(checkFixture(cov, r).some((e) => e.includes('grid mismatch') || e.includes('symbols mismatch'))).toBe(true);
+    expect(checkFixture(cov, r).some((e) => e.includes('grid mismatch'))).toBe(true);
   });
-  it('fails a row outside the window (below fromMs)', () => {
+  it('fails a row below fromMs', () => {
     const r = full();
     for (const s of cov.symbols) r[s] = [{ minute_ts: from - M }, ...r[s]];
     expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
@@ -234,18 +234,20 @@ describe('checkFixture', () => {
     for (const s of cov.symbols) r[s] = [...r[s], { minute_ts: to }];
     expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
   });
-  it('total-gap boundary: == budget passes, +1 fails', () => {
-    const g = Array.from({ length: (to - from) / M }, (_, i) => from + i * M);
-    const keep2 = (n: number) => Object.fromEntries(cov.symbols.map((s) => [s, g.slice(0, g.length - n).map((t) => ({ minute_ts: t }))]));
-    expect(checkFixture(cov, keep2(2))).toEqual([]);                               // gap == 2
-    expect(checkFixture(cov, keep2(3)).some((e) => e.includes('total gap'))).toBe(true); // gap 3 > 2
+  it('total-gap boundary: == budget passes, +1 fails (consecutive budget relaxed)', () => {
+    const g = gridArr();
+    // drop the last N minutes → a trailing run of N; relax the consecutive budget so only total-gap gates
+    const covT = { ...cov, maxConsecutiveGapMinutes: 10 };
+    const keep = (n: number) => Object.fromEntries(cov.symbols.map((s) => [s, g.slice(0, g.length - n).map((t) => ({ minute_ts: t }))]));
+    expect(checkFixture(covT, keep(2))).toEqual([]);                                  // total gap == 2
+    expect(checkFixture(covT, keep(3)).some((e) => e.includes('total gap'))).toBe(true); // 3 > 2
   });
-  it('consecutive-gap boundary: == budget passes, +1 fails', () => {
-    // budget 1: a single one-minute hole passes; a two-minute hole fails
-    const g = Array.from({ length: (to - from) / M }, (_, i) => from + i * M);
+  it('consecutive-gap boundary: == budget passes, +1 fails (total budget relaxed)', () => {
+    const g = gridArr();
+    const covC = { ...cov, totalGapBudgetMinutes: 10 }; // only consecutive gates
     const drop = (idx: number[]) => Object.fromEntries(cov.symbols.map((s) => [s, g.filter((_, i) => !idx.includes(i)).map((t) => ({ minute_ts: t }))]));
-    expect(checkFixture({ ...cov, totalGapBudgetMinutes: 5 }, drop([3]))).toEqual([]);                     // one-minute hole
-    expect(checkFixture({ ...cov, totalGapBudgetMinutes: 5 }, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
+    expect(checkFixture(covC, drop([3]))).toEqual([]);                                 // one-minute hole (== 1)
+    expect(checkFixture(covC, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
   });
 });
 ```
@@ -253,7 +255,7 @@ describe('checkFixture', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pnpm vitest run test/scripts/verify-fixtures.test.ts`
-Expected: FAIL — `checkFixture` / `totalGap` / `maxConsecutiveGap` are not exported.
+Expected: FAIL — `checkFixture` / `totalGap` / `maxConsecutiveGap` not exported.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -295,7 +297,8 @@ export function maxConsecutiveGap(grid: number[], fromMs: number, toMs: number):
 }
 
 /** Declared (coverage) vs actual (rowsBySymbol). Returns [] when the fixture passes.
- *  Structural checks run before row data so a missing symbol is a clean FAIL, not a throw. */
+ *  Symbol-set equality is exact over ALL keys (an extra empty key fails), then each declared
+ *  symbol is checked non-empty — so `{ X: [] }` can never slip through. */
 export function checkFixture(
   coverage: CoverageDoc,
   rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>> | undefined,
@@ -303,11 +306,13 @@ export function checkFixture(
   const rows = rowsBySymbol ?? {};
   const { fromMs, toMs } = coverage.period;
 
-  const actual = Object.keys(rows).filter((s) => (rows[s]?.length ?? 0) > 0).sort();
+  const keys = Object.keys(rows).sort();
   const declared = [...coverage.symbols].sort();
-  if (JSON.stringify(actual) !== JSON.stringify(declared)) {
-    return [`symbols mismatch: declared [${declared.join(', ')}] vs actual non-empty [${actual.join(', ')}]`];
+  if (JSON.stringify(keys) !== JSON.stringify(declared)) {
+    return [`symbols mismatch: declared [${declared.join(', ')}] vs rowsBySymbol keys [${keys.join(', ')}]`];
   }
+  const empty = declared.filter((s) => (rows[s]?.length ?? 0) === 0);
+  if (empty.length) return [`empty rows for declared symbol(s): ${empty.join(', ')}`];
 
   const errs: string[] = [];
   for (const s of declared) errs.push(...checkRowsIntegrity(s, rows[s]!));
@@ -342,61 +347,61 @@ Expected: PASS (all Task 1 + Task 2 cases).
 
 ```bash
 git add scripts/verify_fixtures.ts test/scripts/verify-fixtures.test.ts
-git commit -m "feat(fixtures): declared-vs-actual comparator with unified grid + gap budgets"
+git commit -m "feat(fixtures): declared-vs-actual comparator (exact symbol set, unified grid, gap budgets)"
 ```
 
 ---
 
-### Task 3: CLI `main()` (two scan roots, warn/enforce), wired into `check:ci` and CI
+### Task 3: `runFixtureVerification(baseDir)` + CLI, wired into `check:ci` and CI
+
+Directly testable (returns an exit code; no subprocess, no `npx`). JSON-parse failure prints a clean FAIL, not a stack trace.
 
 **Files:**
-- Modify: `scripts/verify_fixtures.ts` (add `main()`)
+- Modify: `scripts/verify_fixtures.ts`
 - Modify: `package.json` (add `verify:fixtures`, append to `check:ci`)
-- Modify: `.github/workflows/ci.yml` (add the gate to the `checks` job)
-- Test: `test/scripts/verify-fixtures.test.ts` (integration: run the script)
+- Modify: `.github/workflows/ci.yml`
+- Test: `test/scripts/verify-fixtures.test.ts`
 
 **Interfaces:**
-- Consumes: `validateCoverageDoc`, `checkFixture` from Tasks 1-2; `loadSnapshot` from `../src/snapshot/loader.js`.
+- Consumes: `validateCoverageDoc`, `checkFixture`, `CoverageDoc` from Tasks 1-2; `loadSnapshot` from `../src/snapshot/loader.js`.
+- Produces: `runFixtureVerification(baseDir: string): number` (0 = all enforced fixtures pass / only legacy warns; 1 = ≥1 FAIL).
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **Step 1: Write the failing test**
 
 ```ts
 // append to test/scripts/verify-fixtures.test.ts
-import { execFileSync } from 'node:child_process';
+import { runFixtureVerification } from '../../scripts/verify_fixtures.js';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
-const SCRIPT = resolve('scripts/verify_fixtures.ts');
-const runScript = (cwd: string) => execFileSync('npx', ['tsx', SCRIPT], { cwd, encoding: 'utf8', stdio: 'pipe' });
-function expectScriptFail(cwd: string, re: RegExp): void {
-  let err: { stdout?: string; stderr?: string } | undefined;
-  try { runScript(cwd); } catch (e) { err = e as typeof err; }
-  expect(err, 'expected non-zero exit').toBeDefined();
-  expect(`${err?.stdout ?? ''}${err?.stderr ?? ''}`).toMatch(re);
-}
-
-describe('verify_fixtures main()', () => {
-  it('passes on the real repo (legacy fixtures warn, exit 0)', () => {
-    expect(() => runScript(process.cwd())).not.toThrow();
+describe('runFixtureVerification', () => {
+  it('returns 0 on the real repo (legacy fixtures warn)', () => {
+    expect(runFixtureVerification('.')).toBe(0);
   });
-  it('fails a fixture whose sidecar is malformed', () => {
+  it('returns 1 for a malformed sidecar', () => {
     const d = mkdtempSync(join(tmpdir(), 'vf-'));
     const fx = join(d, 'data/snapshots/wfo/bad');
     mkdirSync(fx, { recursive: true });
     writeFileSync(join(fx, 'coverage.json'), JSON.stringify({ schemaVersion: 'fixture-coverage.1' }));
-    // no manifest/bundle needed: schema check fails first
-    expectScriptFail(d, /FAIL|schema invalid/);
+    expect(runFixtureVerification(d)).toBe(1);
+  });
+  it('returns 1 for a non-JSON sidecar without throwing', () => {
+    const d = mkdtempSync(join(tmpdir(), 'vf-'));
+    const fx = join(d, 'data/snapshots/wfo/bad2');
+    mkdirSync(fx, { recursive: true });
+    writeFileSync(join(fx, 'coverage.json'), '{ not json');
+    expect(runFixtureVerification(d)).toBe(1);
   });
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm vitest run test/scripts/verify-fixtures.test.ts -t "main"`
-Expected: FAIL — the script has no `main()` yet, so `npx tsx scripts/verify_fixtures.ts` exits 0 on the real repo but the malformed-sidecar case does not fail.
+Run: `pnpm vitest run test/scripts/verify-fixtures.test.ts -t "runFixtureVerification"`
+Expected: FAIL — `runFixtureVerification` not exported.
 
-- [ ] **Step 3: Add `main()` to the script**
+- [ ] **Step 3: Add `runFixtureVerification` + a thin `main()`**
 
 ```ts
 // append to scripts/verify_fixtures.ts
@@ -412,42 +417,45 @@ function fixtureDirs(root: string): string[] {
   return readdirSync(root).map((n) => join(root, n)).filter((p) => statSync(p).isDirectory());
 }
 
-function main(): void {
+/** Scan the two fixture roots under `baseDir`. Returns a process exit code (0 ok / 1 any FAIL). */
+export function runFixtureVerification(baseDir: string): number {
   let failed = 0;
   let enforced = 0;
   for (const root of SCAN_ROOTS) {
-    for (const dir of fixtureDirs(root)) {
+    for (const dir of fixtureDirs(join(baseDir, root))) {
       const coveragePath = join(dir, 'coverage.json');
-      if (!existsSync(coveragePath)) {
-        console.log(`WARN  ${dir} — legacy (no declared coverage)`);
-        continue;
-      }
+      if (!existsSync(coveragePath)) { console.log(`WARN  ${dir} — legacy (no declared coverage)`); continue; }
       enforced++;
-      const doc = JSON.parse(readFileSync(coveragePath, 'utf8')) as unknown;
+
+      let doc: unknown;
+      try { doc = JSON.parse(readFileSync(coveragePath, 'utf8')); }
+      catch (e) { console.error(`FAIL  ${dir}\n  - coverage.json is not valid JSON: ${(e as Error).message}`); failed++; continue; }
+
       const schemaErrs = validateCoverageDoc(doc);
       if (schemaErrs.length) { console.error(`FAIL  ${dir}\n${schemaErrs.map((e) => `  - ${e}`).join('\n')}`); failed++; continue; }
 
       let rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>> | undefined;
-      try {
-        rowsBySymbol = loadSnapshot(dir).bundle.historical?.rowsBySymbol;
-      } catch (e) {
-        console.error(`FAIL  ${dir}\n  - could not load snapshot: ${(e as Error).message}`); failed++; continue;
-      }
+      try { rowsBySymbol = loadSnapshot(dir).bundle.historical?.rowsBySymbol; }
+      catch (e) { console.error(`FAIL  ${dir}\n  - could not load snapshot: ${(e as Error).message}`); failed++; continue; }
+
       const errs = checkFixture(doc as CoverageDoc, rowsBySymbol);
       if (errs.length) { console.error(`FAIL  ${dir}\n${errs.map((e) => `  - ${e}`).join('\n')}`); failed++; }
       else console.log(`OK    ${dir}`);
     }
   }
-  if (failed) { console.error(`verify_fixtures: ${failed} fixture(s) FAILED`); process.exit(1); }
+  if (failed) { console.error(`verify_fixtures: ${failed} fixture(s) FAILED`); return 1; }
   console.log(`verify_fixtures: OK (${enforced} enforced, legacy warned)`);
+  return 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exit(runFixtureVerification('.'));
+}
 ```
 
 - [ ] **Step 4: Wire it into the gate chain**
 
-In `package.json`, add the script (next to the other `verify:*` entries) and append it to `check:ci`:
+In `package.json`, add the script next to the other `verify:*` entries and append it to `check:ci`:
 
 ```jsonc
 "verify:fixtures": "tsx scripts/verify_fixtures.ts",
@@ -465,44 +473,39 @@ In `.github/workflows/ci.yml`, add a step to the `checks` job after `verify:gold
 Run: `pnpm vitest run test/scripts/verify-fixtures.test.ts`
 Expected: PASS.
 Run: `pnpm verify:fixtures`
-Expected: prints `WARN` for every existing fixture and `verify_fixtures: OK (0 enforced, legacy warned)`, exit 0.
+Expected: `WARN` for every existing fixture, then `verify_fixtures: OK (0 enforced, legacy warned)`, exit 0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/verify_fixtures.ts test/scripts/verify-fixtures.test.ts package.json .github/workflows/ci.yml
-git commit -m "feat(fixtures): verify:fixtures CLI, warn-legacy/enforce, wired into check:ci + CI"
+git commit -m "feat(fixtures): runFixtureVerification + verify:fixtures gate wired into check:ci + CI"
 ```
 
 ---
 
 ### Task 4: Code-default `MOCK_SNAPSHOT_REF` → T1 (item 5)
 
-Independent of Tasks 1-3 and 5-6. Points the hardcoded fallback and `.env.example` at the T1 SSOT fixture; does not touch `ecosystem-defaults.yaml`.
+Independent of the other tasks. `.env.example:6` already reads the T1 ref (verify; no change expected).
 
 **Files:**
 - Modify: `src/access/config.ts:34`
-- Modify: `.env.example` (already `fixtures/2026-06-22-to-2026-06-28-vps` — verify; if so, no change)
-- Modify: `README.md` (the code-default note at lines ~154-155)
-- Test: `test/access/config.test.ts`
+- Modify: `README.md` (code-default note, ~lines 154-156)
+- Test: `test/access/config.test.ts` (add one `it` to the existing `describe('loadMockConfig', ...)` — imports already present)
 
 - [ ] **Step 1: Write the failing test**
 
-```ts
-// append to test/access/config.test.ts
-import { describe, it, expect } from 'vitest';
-import { loadMockConfig } from '../../src/access/config.js';
+Add this `it` inside the existing `describe('loadMockConfig', ...)` block in `test/access/config.test.ts` (do **not** re-import `vitest` or `loadMockConfig` — they are already imported at the top):
 
-describe('loadMockConfig code-default', () => {
+```ts
   it('defaults snapshotRef to the T1 native-1m SSOT fixture, not the synthetic one', () => {
     expect(loadMockConfig({}).snapshotRef).toBe('fixtures/2026-06-22-to-2026-06-28-vps');
   });
-});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm vitest run test/access/config.test.ts -t "code-default"`
+Run: `pnpm vitest run test/access/config.test.ts -t "T1 native-1m"`
 Expected: FAIL — actual is `fixtures/2026-06-16-synthetic`.
 
 - [ ] **Step 3: Change the default**
@@ -518,9 +521,9 @@ In `src/access/config.ts:34`:
 Run: `pnpm vitest run test/access/config.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Update the README note and verify `.env.example`**
+- [ ] **Step 5: Update the README note; verify `.env.example`**
 
-Confirm `.env.example:6` already reads `MOCK_SNAPSHOT_REF=fixtures/2026-06-22-to-2026-06-28-vps` (no change if so). In `README.md`, replace the now-false code-default note (lines ~154-156):
+Confirm `.env.example:6` already reads `MOCK_SNAPSHOT_REF=fixtures/2026-06-22-to-2026-06-28-vps` (no edit if so). In `README.md`, replace the now-false code-default note:
 
 Old:
 ```
@@ -539,7 +542,7 @@ minute rows on `/historical/rows`.
 
 - [ ] **Step 6: Run the full check and commit**
 
-Run: `pnpm check` (typecheck + isolation + tests)
+Run: `pnpm check`
 Expected: PASS.
 
 ```bash
@@ -551,25 +554,32 @@ git commit -m "fix(config): default MOCK_SNAPSHOT_REF to the T1 native-1m fixtur
 
 ### Task 5: `make-wfo-fixture.ts` authoring tool (item 1, code)
 
-Pure transforms (intersection, bar filtering, provenance accounting) plus a CLI that writes the aligned bundle + `manifest.json` + `checksums.json` + `coverage.json` (from flags) + `provenance.json`. No VPS access here; tested with synthetic input.
+Exports `writeWfoFixture(opts)` — tested end-to-end in a temp dir against a real gzipped source fixture — plus the pure transforms. `coverage.json` is authored **only** from `opts` (never from bundle content). The provenance hash is over the **raw pre-gzip** bundle bytes.
 
 **Files:**
 - Create: `scripts/make-wfo-fixture.ts`
 - Test: `test/scripts/make-wfo-fixture.test.ts`
 
 **Interfaces:**
+- Consumes: `sha256Hex` (`../src/snapshot/checksums.js`), `bundleRefForByteLength` / `encodeBundleFileBytes` / `decodeBundleFileBytes` (`../src/snapshot/bundle-io.js`), `loadSnapshot` (`../src/snapshot/loader.js`).
 - Produces:
-  - `intersectToCommonGrid<R extends { minute_ts: number }>(rowsBySymbol: Record<string, ReadonlyArray<R>>, symbols: string[], fromMs: number, toMs: number): { grid: number[]; filtered: Record<string, R[]>; perSymbol: Record<string, { inWindow: number; final: number }> }`
-  - `filterBarsToWindow<B extends { tsMs: number }>(bars: Record<string, Record<string, ReadonlyArray<B>>>, fromMs: number, toMs: number): Record<string, Record<string, B[]>>`
+  - `intersectToCommonGrid<R extends { minute_ts: number }>(rowsBySymbol, symbols, fromMs, toMs): { grid: number[]; filtered: Record<string, R[]>; perSymbol: Record<string, { inWindow: number; final: number }> }`
+  - `filterBarsToWindow<B extends { tsMs: number }>(bars, fromMs, toMs): Record<string, Record<string, B[]>>`
+  - `writeWfoFixture(opts: { source: string; out: string; symbols: string[]; fromMs: number; toMs: number; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number }): { bundleRef: string; gridSize: number }`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```ts
 // test/scripts/make-wfo-fixture.test.ts
 import { describe, it, expect } from 'vitest';
-import { intersectToCommonGrid, filterBarsToWindow } from '../../scripts/make-wfo-fixture.js';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { intersectToCommonGrid, filterBarsToWindow, writeWfoFixture } from '../../scripts/make-wfo-fixture.js';
+import { loadSnapshot } from '../../src/snapshot/loader.js';
 
 const M = 60_000;
+
 describe('intersectToCommonGrid', () => {
   it('keeps only minutes present in every symbol, within the window', () => {
     const rows = {
@@ -577,17 +587,58 @@ describe('intersectToCommonGrid', () => {
       B: [{ minute_ts: M, v: 9 }, { minute_ts: 3 * M, v: 8 }, { minute_ts: 99 * M, v: 7 }],
     };
     const { grid, filtered, perSymbol } = intersectToCommonGrid(rows, ['A', 'B'], M, 4 * M);
-    expect(grid).toEqual([M, 3 * M]);           // 2*M missing from B; 99*M outside window
+    expect(grid).toEqual([M, 3 * M]);
     expect(filtered.A.map((r) => r.minute_ts)).toEqual([M, 3 * M]);
-    expect(filtered.B.map((r) => r.minute_ts)).toEqual([M, 3 * M]);
     expect(perSymbol.A).toEqual({ inWindow: 3, final: 2 });
     expect(perSymbol.B).toEqual({ inWindow: 2, final: 2 }); // 99*M excluded from inWindow
   });
 });
+
 describe('filterBarsToWindow', () => {
   it('drops bars outside [fromMs, toMs)', () => {
     const bars = { A: { '1h': [{ tsMs: 0 }, { tsMs: M }, { tsMs: 4 * M }] } };
     expect(filterBarsToWindow(bars, M, 4 * M).A['1h'].map((b) => b.tsMs)).toEqual([M]);
+  });
+});
+
+describe('writeWfoFixture (end-to-end)', () => {
+  // Use a real committed, gzipped, native-1m source; pick 5 of its symbols and a small window.
+  const SOURCE = 'data/snapshots/fixtures/2026-06-22-to-2026-06-28-vps';
+
+  it('writes a loadable fixture with sidecars authored from flags', () => {
+    const src = loadSnapshot(SOURCE).bundle;
+    const rows = src.historical!.rowsBySymbol!;
+    const symbols = Object.keys(rows).sort().slice(0, 5);
+    // a small window covering the first ~10 minutes shared by these symbols
+    const firstTs = Math.min(...symbols.map((s) => rows[s]![0]!.minute_ts));
+    const fromMs = firstTs;
+    const toMs = firstTs + 10 * M;
+
+    const out = join(mkdtempSync(join(tmpdir(), 'wfo-')), 'w42');
+    const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10 });
+
+    // 1. loads through the full gate chain
+    const built = loadSnapshot(out).bundle;
+    expect(Object.keys(built.historical!.rowsBySymbol!).sort()).toEqual([...symbols].sort());
+
+    // 2. coverage.json comes verbatim from the flags
+    const cov = JSON.parse(readFileSync(join(out, 'coverage.json'), 'utf8'));
+    expect(cov).toMatchObject({ schemaVersion: 'fixture-coverage.1', period: { fromMs, toMs }, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10 });
+    expect([...cov.symbols].sort()).toEqual([...symbols].sort());
+
+    // 3. checksum entry matches the written bundle file
+    const checks = JSON.parse(readFileSync(join(out, 'checksums.json'), 'utf8'));
+    expect(checks[res.bundleRef]).toMatch(/^[0-9a-f]{64}$/);
+
+    // 4. provenance records the attrition chain per symbol
+    const prov = JSON.parse(readFileSync(join(out, 'provenance.json'), 'utf8'));
+    for (const s of symbols) {
+      const p = prov.perSymbol[s];
+      expect(p.finalRowsAfterIntersection).toBe(res.gridSize);
+      expect(p.droppedByWindow).toBe(p.rawRowsInProbeWindow - p.rowsInSelectedWindowBeforeIntersection);
+      expect(p.droppedByIntersection).toBe(p.rowsInSelectedWindowBeforeIntersection - p.finalRowsAfterIntersection);
+    }
+    expect(existsSync(join(out, 'provenance.json'))).toBe(true);
   });
 });
 ```
@@ -597,7 +648,7 @@ describe('filterBarsToWindow', () => {
 Run: `pnpm vitest run test/scripts/make-wfo-fixture.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the pure transforms + CLI**
+- [ ] **Step 3: Write the transforms + `writeWfoFixture` + CLI**
 
 ```ts
 // scripts/make-wfo-fixture.ts
@@ -605,11 +656,10 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sha256Hex } from '../src/snapshot/checksums.js';
-import { bundleRefForByteLength, encodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
+import { bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 import type { SnapshotManifest } from '../src/contract/snapshot/manifest.js';
 
-/** Filter each symbol's rows to the common minute grid within [fromMs, toMs). */
 export function intersectToCommonGrid<R extends { minute_ts: number }>(
   rowsBySymbol: Record<string, ReadonlyArray<R>>,
   symbols: string[],
@@ -625,9 +675,7 @@ export function intersectToCommonGrid<R extends { minute_ts: number }>(
     perSymbol[s] = { inWindow: set.size, final: 0 };
   }
   let common: Set<number> | null = null;
-  for (const s of symbols) {
-    common = common === null ? new Set(inWindow[s]) : new Set([...common].filter((t) => inWindow[s]!.has(t)));
-  }
+  for (const s of symbols) common = common === null ? new Set(inWindow[s]) : new Set([...common].filter((t) => inWindow[s]!.has(t)));
   const gridSet = common ?? new Set<number>();
   const grid = [...gridSet].sort((a, b) => a - b);
   const filtered: Record<string, R[]> = {};
@@ -638,7 +686,6 @@ export function intersectToCommonGrid<R extends { minute_ts: number }>(
   return { grid, filtered, perSymbol };
 }
 
-/** Keep only bars whose tsMs is inside [fromMs, toMs). */
 export function filterBarsToWindow<B extends { tsMs: number }>(
   bars: Record<string, Record<string, ReadonlyArray<B>>>,
   fromMs: number,
@@ -652,27 +699,26 @@ export function filterBarsToWindow<B extends { tsMs: number }>(
   return out;
 }
 
-function arg(name: string): string {
-  const i = process.argv.indexOf(`--${name}`);
-  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
-  throw new Error(`missing required --${name}`);
+interface SrcHistorical {
+  rowsBySymbol?: Record<string, Array<{ minute_ts: number }>>;
+  barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number }>>>;
+  fundingBySymbol: Record<string, unknown[]>;
+  openInterestBySymbol: Record<string, unknown[]>;
+  liquidationsBySymbol: Record<string, unknown[]>;
 }
 
-function main(): void {
-  const source = arg('source');            // raw local (uncommitted) fixture dir
-  const out = arg('out');                  // e.g. data/snapshots/wfo/<ref>
-  const symbols = arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-  const fromMs = Number(arg('from'));
-  const toMs = Number(arg('to'));
-  const totalGapBudgetMinutes = Number(arg('total-gap-budget'));
-  const maxConsecutiveGapMinutes = Number(arg('max-consecutive-gap'));
-  if (symbols.length !== 5) throw new Error(`--symbols must list exactly 5 symbols, got ${symbols.length}`);
+export interface WriteWfoOpts {
+  source: string; out: string; symbols: string[];
+  fromMs: number; toMs: number;
+  totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number;
+}
+
+export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSize: number } {
+  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes } = opts;
+  if (symbols.length !== 5) throw new Error(`expected exactly 5 symbols, got ${symbols.length}`);
 
   const srcManifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
-  const src = loadSnapshot(source).bundle as unknown as {
-    historical?: { rowsBySymbol?: Record<string, Array<{ minute_ts: number }>>; barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number }>>>; fundingBySymbol: Record<string, unknown[]>; openInterestBySymbol: Record<string, unknown[]>; liquidationsBySymbol: Record<string, unknown[]> };
-    [k: string]: unknown;
-  };
+  const src = loadSnapshot(source).bundle as unknown as { historical?: SrcHistorical; [k: string]: unknown };
   const h = src.historical;
   if (!h?.rowsBySymbol) throw new Error('source has no historical.rowsBySymbol');
 
@@ -681,7 +727,7 @@ function main(): void {
 
   const { grid, filtered, perSymbol } = intersectToCommonGrid(h.rowsBySymbol, symbols, fromMs, toMs);
   const pick = <V>(obj: Record<string, V>): Record<string, V> => Object.fromEntries(symbols.filter((s) => s in obj).map((s) => [s, obj[s]!]));
-  const historical = {
+  const historical: SrcHistorical = {
     barsBySymbolAndTimeframe: filterBarsToWindow(pick(h.barsBySymbolAndTimeframe), fromMs, toMs),
     fundingBySymbol: pick(h.fundingBySymbol),
     openInterestBySymbol: pick(h.openInterestBySymbol),
@@ -689,8 +735,7 @@ function main(): void {
     rowsBySymbol: filtered,
   };
   const fixture = { ...src, historical };
-  const bundleStr = JSON.stringify(fixture);
-  const bundleBytes = Buffer.from(bundleStr, 'utf8');
+  const bundleBytes = Buffer.from(JSON.stringify(fixture), 'utf8');
   const bundleRef = bundleRefForByteLength(bundleBytes.length);
   const encoded = encodeBundleFileBytes(bundleBytes, bundleRef);
 
@@ -708,7 +753,7 @@ function main(): void {
   writeFileSync(join(out, 'checksums.json'), JSON.stringify({ [bundleRef]: sha256Hex(encoded) }, null, 2));
   writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
-  // coverage.json — authored ONLY from flags (never from the produced bundle)
+  // coverage.json — authored ONLY from opts (never from the produced bundle)
   writeFileSync(join(out, 'coverage.json'), JSON.stringify({
     schemaVersion: 'fixture-coverage.1',
     period: { fromMs, toMs },
@@ -717,11 +762,12 @@ function main(): void {
     maxConsecutiveGapMinutes,
   }, null, 2));
 
-  // provenance.json — descriptive audit; distinguishes VPS absence from trimming
+  // provenance.json — descriptive; hash is over the RAW pre-gzip source bundle bytes
+  const rawSourceBytes = decodeBundleFileBytes(readFileSync(join(source, srcManifest.bundleRef)), srcManifest.bundleRef);
   writeFileSync(join(out, 'provenance.json'), JSON.stringify({
     note: 'rows filtered to the intersection of the 5 source series',
     rawSourceRef: source,
-    rawSourceBundleSha256: sha256Hex(readFileSync(join(source, srcManifest.bundleRef))),
+    rawSourceBundleSha256: sha256Hex(rawSourceBytes),
     window: { fromMs, toMs },
     commonGridSize: grid.length,
     rankingTieBreak: 'top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC',
@@ -735,13 +781,32 @@ function main(): void {
   }, null, 2));
 
   loadSnapshot(out); // fail loudly if the written fixture does not load
-  console.log(`wfo fixture '${ref}' written: 5 symbols, grid ${grid.length} min, bundleRef ${bundleRef}`);
+  return { bundleRef, gridSize: grid.length };
+}
+
+function arg(name: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
+  throw new Error(`missing required --${name}`);
+}
+
+function main(): void {
+  const res = writeWfoFixture({
+    source: arg('source'),
+    out: arg('out'),
+    symbols: arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
+    fromMs: Number(arg('from')),
+    toMs: Number(arg('to')),
+    totalGapBudgetMinutes: Number(arg('total-gap-budget')),
+    maxConsecutiveGapMinutes: Number(arg('max-consecutive-gap')),
+  });
+  console.log(`wfo fixture written: grid ${res.gridSize} min, bundleRef ${res.bundleRef}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Run the tests + typecheck**
 
 Run: `pnpm vitest run test/scripts/make-wfo-fixture.test.ts`
 Expected: PASS.
@@ -752,75 +817,262 @@ Expected: PASS.
 
 ```bash
 git add scripts/make-wfo-fixture.ts test/scripts/make-wfo-fixture.test.ts
-git commit -m "feat(fixtures): make-wfo-fixture authoring tool (intersect + coverage/provenance sidecars)"
+git commit -m "feat(fixtures): make-wfo-fixture — writeWfoFixture with sidecars from flags + raw-hash provenance"
 ```
 
 ---
 
-### Task 6: Fetch, produce, validate, and commit the T2 fixture (item 1, data) + smoke + Docker gate
+### Task 6: Deterministic ranking + window selection (`wfo-select.ts`) + `wfo-probe` CLI
 
-This task runs the read-only VPS pull and commits the fixture. It is a **runbook**, not TDD — the only automated tests are the nested-ref smoke and the Docker inverse gate at the end. **Stop and report a blocker** at any ⛔ below.
+Testable pure functions so ranking and anchor selection are executable, not prose.
 
 **Files:**
+- Create: `scripts/wfo-select.ts`
+- Create: `scripts/wfo-probe.ts`
+- Test: `test/scripts/wfo-select.test.ts`
+
+**Interfaces:**
+- Consumes: `intersectToCommonGrid` (`./make-wfo-fixture.js`), `totalGap` / `maxConsecutiveGap` (`./verify_fixtures.js`).
+- Produces:
+  - `sumTurnover(rowsBySymbol: Record<string, ReadonlyArray<{ turnover: number }>>): Record<string, number>`
+  - `rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary: string, count: number): string[]`
+  - `selectWfoWindow(rowsBySymbol, symbols: string[], probeFrom: number, probeTo: number, spanDays: number, totalGapBudgetMinutes: number, maxConsecutiveGapMinutes: number): { fromMs: number; toMs: number } | null`
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// test/scripts/wfo-select.test.ts
+import { describe, it, expect } from 'vitest';
+import { sumTurnover, rankWfoSymbols, selectWfoWindow } from '../../scripts/wfo-select.js';
+
+const M = 60_000;
+const DAY = 86_400_000;
+
+describe('sumTurnover', () => {
+  it('sums turnover per symbol', () => {
+    expect(sumTurnover({ A: [{ turnover: 2 }, { turnover: 3 }], B: [{ turnover: 5 }] })).toEqual({ A: 5, B: 5 });
+  });
+});
+
+describe('rankWfoSymbols', () => {
+  it('puts primary first, then top-N by turnover desc, ties symbol ASC', () => {
+    const t = { HUSDT: 1, ZUSDT: 100, AUSDT: 50, BUSDT: 50, CUSDT: 10 };
+    // excl HUSDT, top-3: ZUSDT(100), then AUSDT/BUSDT tie(50)→ASC, so AUSDT, BUSDT
+    expect(rankWfoSymbols(t, 'HUSDT', 3)).toEqual(['HUSDT', 'ZUSDT', 'AUSDT', 'BUSDT']);
+  });
+});
+
+describe('selectWfoWindow', () => {
+  // build 3 days of a fully dense 1m grid shared by 2 symbols
+  const probeFrom = 0;
+  const probeTo = 3 * DAY;
+  const dense = (): Record<string, { minute_ts: number }[]> => {
+    const g = Array.from({ length: (probeTo - probeFrom) / M }, (_, i) => probeFrom + i * M);
+    return { A: g.map((t) => ({ minute_ts: t })), B: g.map((t) => ({ minute_ts: t })) };
+  };
+  it('returns the freshest 1-day window that fits within budget', () => {
+    const w = selectWfoWindow(dense(), ['A', 'B'], probeFrom, probeTo, 1, 0, 0);
+    expect(w).toEqual({ fromMs: 2 * DAY, toMs: 3 * DAY }); // freshest 1-day slice, zero gaps
+  });
+  it('returns null when no window fits the budget', () => {
+    const r = dense();
+    // punch a 2-day hole into B everywhere → intersection is tiny → over budget
+    r.B = r.B.filter((_, i) => i % 10_000 === 0);
+    expect(selectWfoWindow(r, ['A', 'B'], probeFrom, probeTo, 1, 5, 5)).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm vitest run test/scripts/wfo-select.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write `wfo-select.ts` and `wfo-probe.ts`**
+
+```ts
+// scripts/wfo-select.ts
+import { intersectToCommonGrid } from './make-wfo-fixture.js';
+import { totalGap, maxConsecutiveGap } from './verify_fixtures.js';
+
+const DAY_MS = 86_400_000;
+
+export function sumTurnover(rowsBySymbol: Record<string, ReadonlyArray<{ turnover: number }>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [s, rows] of Object.entries(rowsBySymbol)) out[s] = rows.reduce((a, r) => a + (r.turnover ?? 0), 0);
+  return out;
+}
+
+/** primary first, then the top `count` other symbols by turnover desc, ties by symbol ASC. */
+export function rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary: string, count: number): string[] {
+  const others = Object.keys(turnoverBySymbol)
+    .filter((s) => s !== primary)
+    .sort((a, b) => (turnoverBySymbol[b]! - turnoverBySymbol[a]!) || (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, count);
+  return [primary, ...others];
+}
+
+/** Slide a `spanDays` half-open window's anchor from the freshest day boundary backwards;
+ *  return the first window whose intersected grid meets both budgets, or null. */
+export function selectWfoWindow(
+  rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>>,
+  symbols: string[],
+  probeFrom: number,
+  probeTo: number,
+  spanDays: number,
+  totalGapBudgetMinutes: number,
+  maxConsecutiveGapMinutes: number,
+): { fromMs: number; toMs: number } | null {
+  const span = spanDays * DAY_MS;
+  for (let toMs = probeTo; toMs - span >= probeFrom; toMs -= DAY_MS) {
+    const fromMs = toMs - span;
+    const { grid } = intersectToCommonGrid(rowsBySymbol, symbols, fromMs, toMs);
+    if (totalGap(grid, fromMs, toMs) <= totalGapBudgetMinutes && maxConsecutiveGap(grid, fromMs, toMs) <= maxConsecutiveGapMinutes) {
+      return { fromMs, toMs };
+    }
+  }
+  return null;
+}
+```
+
+```ts
+// scripts/wfo-probe.ts
+// Read-only: reads the LOCAL raw pull (no VPS), prints the 5 selected symbols and the chosen
+// 42-day window, or exits non-zero (a blocker) when no window fits the frozen budgets.
+import { pathToFileURL } from 'node:url';
+import { loadSnapshot } from '../src/snapshot/loader.js';
+import { sumTurnover, rankWfoSymbols, selectWfoWindow } from './wfo-select.js';
+
+function arg(name: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
+  throw new Error(`missing required --${name}`);
+}
+
+function main(): void {
+  const source = arg('source');
+  const primary = arg('primary').toUpperCase();
+  const count = Number(arg('count'));
+  const probeFrom = Number(arg('probe-from'));
+  const probeTo = Number(arg('probe-to'));
+  const spanDays = Number(arg('span-days'));
+  const totalGapBudget = Number(arg('total-gap-budget'));
+  const maxConsecutiveGap = Number(arg('max-consecutive-gap'));
+
+  const bundle = loadSnapshot(source).bundle as unknown as {
+    historical?: { rowsBySymbol?: Record<string, Array<{ minute_ts: number; turnover: number }>> };
+  };
+  const rows = bundle.historical?.rowsBySymbol;
+  if (!rows) { console.error('BLOCKER: source has no historical.rowsBySymbol'); process.exit(2); }
+
+  const symbols = rankWfoSymbols(sumTurnover(rows), primary, count);
+  if (symbols.length !== count + 1) { console.error(`BLOCKER: ranked ${symbols.length} symbols, need ${count + 1}`); process.exit(2); }
+
+  const win = selectWfoWindow(rows, symbols, probeFrom, probeTo, spanDays, totalGapBudget, maxConsecutiveGap);
+  if (!win) { console.error('BLOCKER: no contiguous window fits the frozen gap budgets — do not tune budgets, do not substitute synthetic data'); process.exit(2); }
+
+  console.log(`symbols=${symbols.join(',')}`);
+  console.log(`from=${win.fromMs}`);
+  console.log(`to=${win.toMs}`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+```
+
+- [ ] **Step 4: Run the tests + typecheck**
+
+Run: `pnpm vitest run test/scripts/wfo-select.test.ts`
+Expected: PASS.
+Run: `pnpm typecheck`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/wfo-select.ts scripts/wfo-probe.ts test/scripts/wfo-select.test.ts
+git commit -m "feat(fixtures): wfo-select (rank/window) + wfo-probe CLI"
+```
+
+---
+
+### Task 7: Fetch, produce, validate, and commit the T2 fixture (item 1, data) + smoke + Docker gate
+
+A **runbook**, not TDD — it runs the single read-only VPS pull and commits the fixture. The only automated tests are the nested-ref smoke and the Docker inverse gate. **Stop and report a blocker** at any ⛔.
+
+**Files:**
+- Modify: `.gitignore` (add `data/snapshots/_raw/`)
 - Create (generated): `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/` (bundle, `manifest.json`, `checksums.json`, `coverage.json`, `provenance.json`)
 - Test: `test/snapshot/wfo-nested-ref.test.ts`
 
-**Prerequisites:** `.env.rollout.local` with VPS credentials present (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
+**Prerequisites:** `.env.rollout.local` with VPS credentials + parquet root (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
 
-- [ ] **Step 1: Fix the probe window and rank symbols (read-only)**
-
-Compute `probeTo = start_of(latest_complete_UTC_day + 1)` and `probeFrom = probeTo − 50·86400·1000`. Using the rollout credentials, run a **read-only** aggregate of summed 1m turnover per symbol over `[probeFrom, probeTo)`. Select `HUSDT` + the top-4 by turnover **excluding HUSDT**, ties by `symbol ASC`.
-
-If the aggregate cannot be produced → ⛔ blocker (do **not** fall back to ranking off the committed 7-day slice). Record the 5 symbols and the exact `probeFrom`/`probeTo`.
-
-- [ ] **Step 2: Read-only raw pull of the 5 symbols**
+- [ ] **Step 1: Gitignore the raw pull, commit it first**
 
 ```bash
-# 50-day pull of ONLY the 5 selected symbols into a gitignored local ref (NOT committed)
-pnpm fetch:snapshot -- \
-  --db-url "$ROLLOUT_DB_URL" --vps "$ROLLOUT_VPS" \
-  --from <probeFrom-date> --to <probeTo-date> \
-  --symbols HUSDT,<S2>,<S3>,<S4>,<S5> \
-  --ref _raw/wfo-probe --mode replace
-# verify native 1m rows exist for all 5 (per control-center mock-platform-snapshot-rollout.md)
+grep -qxF 'data/snapshots/_raw/' .gitignore || echo 'data/snapshots/_raw/' >> .gitignore
+git add .gitignore
+git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
 ```
 
-Before pulling, ensure `data/snapshots/_raw/` is in `.gitignore` (add it if missing) — it must never be committed, and it sits outside the two validator scan roots (`fixtures/*`, `wfo/*`) so it is never validated. If any of the 5 symbols has no native 1m rows → ⛔ blocker.
+- [ ] **Step 2: Fix the probe window (UTC)**
 
-- [ ] **Step 3: Choose the 42-day anchor offline**
+Compute `probeTo = start_of(latest_complete_UTC_day + 1)` (ms) and `probeFrom = probeTo − 50·86_400_000`. Record both integers — every later step reuses them.
 
-Working only from the local `_raw/wfo-probe` bundle, slide the anchor: for each candidate `toMs` (freshest complete day first), `fromMs = toMs − 42·86400·1000`; intersect the 5 symbols to the common grid within `[fromMs, toMs)`; accept the first window where **both** `totalGap ≤ 6480` and `maxConsecutiveGap ≤ 1440` hold on that grid. (A throwaway script may reuse `intersectToCommonGrid`, `totalGap`, `maxConsecutiveGap` from `scripts/make-wfo-fixture.js` / `scripts/verify_fixtures.js`.)
+- [ ] **Step 3: One read-only pull of ALL symbols over the probe window**
 
-If no anchor passes → ⛔ blocker (do **not** tune the budgets; do **not** substitute synthetic data).
+`fetch-snapshot`'s `--to` is **inclusive of the whole day**, so to cover the half-open `[probeFrom, probeTo)` pass the date of `probeTo − 1 day` as `--to`. `--parquet-root` is **required** or historical comes back null.
 
-- [ ] **Step 4: Produce the aligned fixture**
+```bash
+NODE_OPTIONS=--max-old-space-size=4096 pnpm fetch:snapshot -- \
+  --db-url "$ROLLOUT_DB_URL" --vps "$ROLLOUT_VPS" \
+  --parquet-root "$ROLLOUT_PARQUET_ROOT" \
+  --from <probeFrom UTC date YYYY-MM-DD> \
+  --to   <(probeTo − 1 day) UTC date YYYY-MM-DD> \
+  --ref  _raw/wfo-probe --mode replace
+```
+
+Confirm native 1m rows exist (`writeSnapshot` logs the count; or `openSnapshot('data/snapshots','_raw/wfo-probe').bundle.historical.rowsBySymbol`). If `historical` is null or any expected symbol has no 1m rows → ⛔ blocker.
+
+- [ ] **Step 4: Rank symbols + select the 42-day window (offline, testable code)**
+
+```bash
+pnpm tsx scripts/wfo-probe.ts -- \
+  --source data/snapshots/_raw/wfo-probe \
+  --primary HUSDT --count 4 \
+  --probe-from <probeFrom ms> --probe-to <probeTo ms> \
+  --span-days 42 --total-gap-budget 6480 --max-consecutive-gap 1440
+```
+
+Prints `symbols=...`, `from=<ms>`, `to=<ms>`. A non-zero exit is a ⛔ blocker (message says which: no rows, or no window fits the frozen budgets). Do **not** tune the budgets or substitute synthetic data.
+
+- [ ] **Step 5: Produce the aligned fixture**
 
 ```bash
 pnpm tsx scripts/make-wfo-fixture.ts -- \
   --source data/snapshots/_raw/wfo-probe \
-  --out    data/snapshots/wfo/<from>-to-<to>-vps-wfo42d \
-  --symbols HUSDT,<S2>,<S3>,<S4>,<S5> \
-  --from <fromMs> --to <toMs> \
+  --out    data/snapshots/wfo/<from-date>-to-<to-date>-vps-wfo42d \
+  --symbols <symbols from step 4> \
+  --from <from ms> --to <to ms> \
   --total-gap-budget 6480 --max-consecutive-gap 1440
 ```
 
-- [ ] **Step 5: Validate in enforce mode — must be green before committing**
+- [ ] **Step 6: Validate in enforce mode — green before committing**
 
 Run: `pnpm verify:fixtures`
-Expected: `OK    data/snapshots/wfo/<from>-to-<to>-vps-wfo42d` and `verify_fixtures: OK (1 enforced, legacy warned)`.
+Expected: `OK    data/snapshots/wfo/<ref>` and `verify_fixtures: OK (1 enforced, legacy warned)`.
 Run: `pnpm check:ci`
 Expected: exit 0.
 
-If `verify:fixtures` reports FAIL → do **not** commit; investigate (the `provenance.json` per-symbol attrition tells you whether the shortfall is VPS absence or trimming).
+If `verify:fixtures` FAILs, do **not** commit — the `provenance.json` per-symbol attrition tells you whether the shortfall is VPS absence (`droppedByWindow`) or intersection (`droppedByIntersection`).
 
-- [ ] **Step 6: Write the nested-ref smoke test**
+- [ ] **Step 7: Write and run the nested-ref smoke test**
 
 ```ts
 // test/snapshot/wfo-nested-ref.test.ts
 import { describe, it, expect } from 'vitest';
 import { openSnapshot } from '../../src/snapshot/registry.js';
 
-const REF = 'wfo/<from>-to-<to>-vps-wfo42d'; // replace with the committed ref
+const REF = 'wfo/<from-date>-to-<to-date>-vps-wfo42d'; // the committed ref
 
 describe('nested wfo ref', () => {
   it('openSnapshot resolves and loads the T2 fixture at a nested ref', () => {
@@ -835,19 +1087,28 @@ describe('nested wfo ref', () => {
 Run: `pnpm vitest run test/snapshot/wfo-nested-ref.test.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Docker inverse gate (three assertions)**
+- [ ] **Step 8: Docker inverse gate — three assertions with real byte sizes**
 
 ```bash
-docker build -t trading-mock-platform:wfo .
+# baseline image from origin/main (before this branch); branch image from the working tree
+git worktree add /tmp/mp-base origin/main
+docker build -q -t trading-mock-platform:base /tmp/mp-base
+docker build -q -t trading-mock-platform:wfo .
+git worktree remove --force /tmp/mp-base
+
+BASE=$(docker image inspect -f '{{.Size}}' trading-mock-platform:base)
+WFO=$(docker image inspect -f '{{.Size}}' trading-mock-platform:wfo)
+echo "delta bytes: $((WFO - BASE))"
+
 # 1. the wfo tree is absent from the image
-docker run --rm --entrypoint sh trading-mock-platform:wfo -c 'test ! -e data/snapshots/wfo && echo ABSENT'
-# 2/3. image size did not grow on the order of the T2 payload (~20 MB) vs origin/main
-docker images trading-mock-platform:wfo --format '{{.Size}}'
+docker run --rm --entrypoint sh trading-mock-platform:wfo -c 'test ! -e data/snapshots/wfo && echo WFO-ABSENT'
+# 2/3. no T2-sized growth: delta must be well under the ~20 MB payload (allow 5 MB of build noise)
+test "$((WFO - BASE))" -lt 5000000 && echo "SIZE-OK"
 ```
 
-Expected: prints `ABSENT`; image size within noise of the `origin/main` image (no ~20 MB jump). If `data/snapshots/wfo` appears in the image → the Dockerfile COPY scope changed unexpectedly → investigate.
+Expected: `WFO-ABSENT` and `SIZE-OK`. If either fails, the Dockerfile COPY scope changed unexpectedly → investigate (do not commit).
 
-- [ ] **Step 8: Commit the fixture and the smoke test**
+- [ ] **Step 9: Commit the fixture and the smoke test**
 
 ```bash
 git add data/snapshots/wfo test/snapshot/wfo-nested-ref.test.ts
@@ -858,5 +1119,6 @@ git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nest
 
 ## Self-review notes
 
-- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-6. Sidecar (Task 1), anti-tautology (Task 5 authors from flags; validator never writes), unified grid + gap semantics (Task 2), two scan roots + warn/enforce (Task 3), bars filtered to window (Task 5), provenance attrition + tie-break + raw hash (Task 5), image inverse gate + nested-ref smoke (Task 6), stop conditions (Task 6 ⛔). All present.
-- **Delivery order:** Tasks 1-3 (validator) precede Task 6 (fixture), so T2 is admitted through an existing gate. Task 4 is independent and may run any time.
+- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-7. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); read-only pull with `--parquet-root` and inclusive-`--to` adjustment (Task 7); image inverse gate with real byte delta + nested-ref smoke (Task 7); `_raw` gitignored and committed before the pull (Task 7); stop conditions (Task 7 ⛔). All present.
+- **Delivery order:** Tasks 1-3 (validator) precede Task 7 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-6 are pure code and can be built and reviewed without VPS access; only Task 7 needs credentials.
+- **Execution split:** Tasks 1-6 are TDD, no credentials needed. Task 7 is inline with credentials and stop-conditions.
