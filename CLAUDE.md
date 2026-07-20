@@ -89,10 +89,10 @@ These are not suggestions — run each step at the trigger.
 trading-mock-platform mirrors the READ surfaces of the private trading-platform from sanitized snapshots.
 - It MUST NOT import private platform runtime/core/db/execution/exchange/config, nor require the private
   repo/package/GitHub auth at Docker build/run.
-- `src/contract/**` is import-clean and extractable, with ONE deliberate exception: the A3 SDK seam
+- `src/contract/**` is import-clean and extractable, with TWO deliberate exceptions — the SDK seams:
   `src/contract/ops-read/dto.sdk.ts` re-exports the live bot-results contract from `@trdlabs/sdk/ops-read`,
   and `src/contract/historical-read/dto.sdk.ts` re-exports `CanonicalRowV2` from `@trdlabs/sdk/historical`.
-  `pnpm verify:contract-isolation` machine-enforces that this is the *only* contract file importing the SDK —
+  `pnpm verify:contract-isolation` machine-enforces that these are the *only* contract files importing the SDK —
   `research-read/dto.ts` and the rest stay dependency-free and extractable.
 - A3 (feature 004): the shared contract is OWNED by `@trdlabs/sdk`, consumed as an EXACT npm pin — this is
   NOT a private-platform-runtime import. `pg`/`ccxt`/exchange SDKs, the private platform package, and the
