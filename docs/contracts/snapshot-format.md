@@ -34,7 +34,7 @@ The manifest is a JSON object with exactly these fields (no extra fields — val
   "checksumsRef": "checksums.json",
   "versions": {
     "snapshotSchemaVersion": "snapshot.1",
-    "opsReadContractVersion": "ops.3",
+    "opsReadContractVersion": "ops.6",
     "researchReadContractVersion": "research.1",
     "analysisContractVersion": "ops.4",
     "exporterVersion": "<exporter-semver or label>",
@@ -44,10 +44,21 @@ The manifest is a JSON object with exactly these fields (no extra fields — val
 }
 ```
 
-The mock performs **exact-match** version checks on startup. A snapshot with
-`opsReadContractVersion: "ops.2"` or `"ops.4"` is rejected — no migration or
-range-match is applied in the MVP. Update all seven version fields when the
-contracts change and a matching mock release is deployed.
+The values above are the ones the current mock accepts; `opsReadContractVersion`
+tracks the vendored SDK (`@trading-platform/sdk/ops-read`) and has moved
+`ops.3 → ops.6` since this contract was first written.
+
+The mock performs **exact-match** version checks on startup: any other value —
+even an adjacent one like `opsReadContractVersion: "ops.5"` — is rejected, since
+no migration or range-match layer exists yet (`src/snapshot/compat.ts`).
+
+Four of the seven fields are gated that way: `snapshotSchemaVersion`,
+`opsReadContractVersion`, `analysisContractVersion`, `researchReadContractVersion`.
+The remaining three — `exporterVersion`, `sourcePlatformCommit`,
+`redactionPolicyVersion` — are provenance labels: they are schema-validated as
+present strings but not matched against anything, so they carry no gate. Keep all
+seven current anyway; the provenance three are what makes a snapshot traceable
+back to its export.
 
 ---
 
@@ -72,7 +83,9 @@ A single JSON object. Every fixed-shape sub-object uses `additionalProperties: f
 in the AJV schema — an extra field on a run record, trade, event, etc. causes startup
 to fail closed.
 
-### Top-level keys (all required)
+### Top-level keys
+
+All required except `historical`, which is absent in pre-008 snapshots.
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -80,6 +93,7 @@ to fail closed.
 | `tradesByRun` | `Record<runId, ClosedTrade[]>` | Closed trades keyed by run id |
 | `eventsByRun` | `Record<runId, OperationalEvent[]>` | Operational events keyed by run id |
 | `decisionsByRun` | `Record<runId, DecisionLogEntry[]>` | Decision-log entries keyed by run id |
+| `tradeEvidenceByTrade` | `Record<tradeId, TradeEvidence>` | Per-trade forensic evidence (entry/exit prices + lifecycle), keyed by trade id |
 | `runtimeHealth` | `RuntimeHealthCollection` | Runtime health per source at export time |
 | `marketHealth` | `MarketServiceHealthSnapshot` | Market service health at export time |
 | `executionHealth` | `ExecutionHealthSnapshot` | Execution subsystem health at export time |
@@ -87,9 +101,30 @@ to fail closed.
 | `analysisByRun` | `Record<runId, AnalysisSnapshot>` | Tier-2 analysis per run (may be empty) |
 | `researchByRun` | `Record<runId, ResearchRunResult>` | Research-read view per run (may be empty) |
 | `replay` | `{ frames: ReplayFrame[] }` | WS replay sequence |
+| `historical` | `HistoricalBundle` *(optional)* | Historical Read surface — absent in pre-008 snapshots |
 
 All shapes are defined in `src/contract/` — see `src/contract/snapshot/bundle.ts` and
 the referenced DTOs.
+
+### `historical` — `HistoricalBundle`
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `barsBySymbolAndTimeframe` | `Record<symbol, Record<timeframe, OhlcvBar[]>>` | OHLCV bars per symbol and timeframe (`1m`/`5m`/`15m`/`1h`/`4h`/`1d`) |
+| `fundingBySymbol` | `Record<symbol, FundingEntry[]>` | Funding-rate series |
+| `openInterestBySymbol` | `Record<symbol, OpenInterestEntry[]>` | Open-interest series |
+| `liquidationsBySymbol` | `Record<symbol, LiquidationEntry[]>` | Liquidation events |
+| `rowsBySymbol` | `Record<symbol, CanonicalRowV2[]>` *(optional)* | Merged canonical minute rows — the `historical.2` source for `/historical/rows` |
+
+`rowsBySymbol` is what `/historical/rows` serves. When it is absent, rows are
+synthesized from `barsBySymbolAndTimeframe` — but **only** when that symbol's
+finest timeframe is `1m`. A snapshot whose bars are coarser (1h/1d) cannot back
+minute rows: `CanonicalRowV2.minute_ts` names a minute, and projecting hourly
+bars into it produces data a consumer cannot tell apart from real minute rows.
+Such a snapshot reports the `rows` resource as `unavailable` on
+`/historical/discover` and answers `/historical/rows` with
+`404 minute_rows_unavailable` (control-center audit P1-2). Its bars stay in the
+snapshot and are described, with their own timeframe, by `/historical/coverage`.
 
 ### Capability-aware fields
 

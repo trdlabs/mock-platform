@@ -39,7 +39,10 @@ function fail(msg) {
 
 // Harness source (SDK repo) and golden source (platform repo) are now distinct.
 const SDK = process.env.SDK_REPO ?? resolve(repoRoot, '../sdk');
-const PLATFORM = process.env.PLATFORM_REPO ?? '/home/alexxxnikolskiy/projects/trading-platform';
+// Sibling-relative like SDK above, not an absolute machine path: the hardcoded
+// /home/.../projects/trading-platform pointed at an unrelated stub directory, so the golden
+// cross-repo check below WARNed and skipped on every run instead of ever comparing anything.
+const PLATFORM = process.env.PLATFORM_REPO ?? resolve(repoRoot, '../platform');
 
 // === harness ===
 // --- HARD: local vendored copy matches its recorded checksum ---
