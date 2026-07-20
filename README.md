@@ -111,8 +111,8 @@ as a **half-open range `[fromMs, toMs)`** — the bar at `minute_ts == toMs` is 
 empty (`toMs` optional → open-ended); `limit` + opaque `cursor` page the result (unknown symbols yield an
 empty page, not an error). A multi-symbol request is served as one **globally ordered** stream —
 `(minute_ts ASC, symbol ASC)` across all pages, not a per-symbol concatenation in request order. Both match
-platform semantics (control-center audit P0-1 / P1-1). This is additive — the older bars-keyed endpoints
-stay as they were.
+platform semantics (control-center audit P0-1 / P1-1). This is additive: it changes only how `rows`
+answers, leaving `/historical/discover` and `/historical/coverage` as they were.
 
 **Minute grain is required — no silent hourly "minute" rows.** `CanonicalRowV2.minute_ts` names a
 minute, so `/historical/rows` is served only from a minute-grain source: native `rowsBySymbol`, or
@@ -155,7 +155,10 @@ responses; the error paths are not identical, and the mock is the stricter of th
 | Non-numeric `fromMs`/`toMs`/`limit` | no validation; `Number()` → `NaN`, `200` empty page | same passthrough, `200` empty page |
 | Historical absent from the snapshot | n/a — the platform always has a store; `/historical/coverage` signals `availability` in the body, `200` | `404 historical_unavailable` |
 | No minute-grain source | n/a | `404 minute_rows_unavailable` |
-| Any 404 | **never returned** — no `404` literal, no `notFound` handler; unmatched paths fall through to Hono's plain-text 404 | returned for the two `not_found` cases above |
+| Any 404 | **never returned by a registered `/historical/*` handler** — no `404` literal and no `notFound` handler in the app | returned for the two `not_found` cases above |
+
+On both sides an *unknown path* under `/historical/` still gets Hono's built-in plain-text
+`404 Not Found` — that is the router, not the handlers, and it is the one 404 behaviour the two share.
 
 The divergence is documented rather than removed. Collapsing the mock onto `{error:"…"}` would drop
 the machine-readable `code` that `minute_rows_unavailable` depends on (the P1-2 guard's whole point is
