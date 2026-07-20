@@ -6,9 +6,12 @@
 // captured by the older fetch-snapshot tooling (e.g. the demo `2026-06-12-real-top5` fixture) carry the
 // per-kind series but no `rowsBySymbol`, so `/historical/rows` would return empty and downstream overlay
 // backtests get an empty market tape. This fills that gap WITHOUT re-capturing data: one row per bar of
-// the FINEST available timeframe (the backtester consumes rows 1:1 as bars — no re-aggregation — so a
-// `SYMBOL:1h` dataset is served correct 1h candles), with minute-granular oi/funding forward-filled to
-// the bar's open and liquidations summed over the bar window. Taker flow is absent in per-kind data.
+// the FINEST available timeframe, with minute-granular oi/funding forward-filled to the bar's open and
+// liquidations summed over the bar window. Taker flow is absent in per-kind data.
+//
+// Synthesis is legitimate ONLY when that finest timeframe IS `1m` — see `hasMinuteGrainBars`. A coarser
+// source (1h/1d) would yield rows whose `minute_ts` steps by the bar interval while still claiming to be
+// minute data; callers must gate on the grain first (control-center audit P1-2).
 //
 // This is a derivation, not a re-capture: turnover is approximated as `volume * close`, and oi/funding
 // are sampled (last value at-or-before the bar). Snapshots that DO carry `rowsBySymbol` bypass this

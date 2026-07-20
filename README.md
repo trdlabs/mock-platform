@@ -91,8 +91,15 @@ consumer could not detect and which silently corrupts any backtest over them (co
 P1-2). Such a snapshot now reports the `rows` resource as `unavailable` in `/historical/discover`,
 omits `1m` from `timeframes`, and answers `/historical/rows` with `404 minute_rows_unavailable`
 rather than an empty page — an empty page is indistinguishable from "your window matched nothing".
-The bars themselves are untouched and stay reachable through the bars-keyed endpoints, which state
-their own timeframe.
+The bars themselves are untouched: they stay in the snapshot and are described, with their own
+timeframe, by `/historical/coverage` and `/historical/discover`. (There is no `/historical/bars`
+endpoint — the historical surface is `discover`, `rows`, `coverage`.)
+
+The guard is scoped to the **requested symbols**, not to the snapshot as a whole: a mixed
+snapshot can carry native minute rows for one symbol and only 1h bars for another, so a request
+naming only coarse-only symbols fails even though the resource is available. A request naming at
+least one minute-capable symbol is served, and coarse-only symbols in it contribute nothing.
+Unknown symbols keep yielding a graceful empty page whenever the resource is available.
 
 The ecosystem default fixture (`fixtures/2026-06-22-to-2026-06-28-vps`) carries native 1m data and
 is unaffected. Note that the *code*-default `MOCK_SNAPSHOT_REF` (`fixtures/2026-06-16-synthetic`) is

@@ -1,11 +1,37 @@
-import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
+import type { SnapshotBundle, HistoricalBundle } from '../../contract/snapshot/bundle.js';
 import type { CanonicalRowV2 } from '../../contract/historical-read/dto.js';
-import { synthesizeRowsFromPerKind, hasMinuteGrainBars } from './rows-from-perkind.js';
+import {
+  synthesizeRowsFromPerKind,
+  hasMinuteGrainBars,
+  syntheticRowGrainMs,
+  MINUTE_MS,
+} from './rows-from-perkind.js';
 
 export interface RowsFilter {
   readonly symbol?: string;
   readonly fromMs?: number;
   readonly toMs?: number;
+}
+
+/** Whether the snapshot carries anything at all for `symbol` (rows or bars). */
+export function isKnownHistoricalSymbol(hist: HistoricalBundle, symbol: string): boolean {
+  return hist.rowsBySymbol?.[symbol] !== undefined
+    || hist.barsBySymbolAndTimeframe?.[symbol] !== undefined;
+}
+
+/**
+ * Whether serving `symbol` would mean projecting coarser-than-minute bars into `minute_ts`.
+ *
+ * Per-symbol, not per-snapshot: a mixed snapshot can hold native minute rows for one symbol
+ * and only 1h bars for another, and a request naming just the latter must not come back as a
+ * plausible-looking empty page (control-center audit P1-2).
+ */
+export function isCoarseOnlySymbol(hist: HistoricalBundle, symbol: string): boolean {
+  // A native rowsBySymbol entry is minute-grain by contract, even when it is empty for the
+  // requested window — that is a genuine empty result, not a grain mismatch.
+  if (hist.rowsBySymbol?.[symbol] !== undefined) return false;
+  const grain = syntheticRowGrainMs(hist, symbol);
+  return grain !== undefined && grain !== MINUTE_MS;
 }
 
 export function readRows(bundle: SnapshotBundle, f: RowsFilter): readonly CanonicalRowV2[] {

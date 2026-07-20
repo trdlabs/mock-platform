@@ -171,6 +171,12 @@ describe('handleRows: global multi-symbol ordering', () => {
     expect(res.items[1]!.minute_ts - res.items[0]!.minute_ts).toBe(60_000);
   });
 
+  it('serves an unknown symbol as a graceful empty page, not an error', () => {
+    const page = handleRows(bundle, { symbols: ['NOPEUSDT'], limit: 10 }, ASOF);
+    if (!isPage(page)) throw new Error('expected a page');
+    expect(page.items).toEqual([]);
+  });
+
   it('half-open range applies to every symbol in a multi-symbol request', () => {
     const page = handleRows(
       bundle,
@@ -182,5 +188,65 @@ describe('handleRows: global multi-symbol ordering', () => {
     expect(page.items).toHaveLength(6);
     expect(page.items.map((r) => r.minute_ts)).not.toContain(grid[2]);
     assertGloballyOrdered(page.items);
+  });
+});
+
+// A snapshot need not be uniform: one symbol can carry native minute rows while another has
+// nothing finer than 1h bars. A snapshot-wide availability check would call the resource
+// available and then answer a HOURLY-only request with an empty page — indistinguishable from
+// "your window matched nothing", the very failure P1-2 exists to remove. The guard is therefore
+// scoped to the requested symbols.
+describe('handleRows: mixed-grain snapshot, per-request guard', () => {
+  const mixed = {
+    historical: {
+      rowsBySymbol: {
+        MINUTEUSDT: grid.map((t) => row('MINUTEUSDT', t)),
+      },
+      barsBySymbolAndTimeframe: {
+        HOURLYUSDT: {
+          '1h': [
+            { tsMs: 3_600_000, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+            { tsMs: 7_200_000, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+          ],
+        },
+      },
+    },
+  } as unknown as SnapshotBundle;
+
+  it('fails when every requested known symbol is coarse-only', () => {
+    const res = handleRows(mixed, { symbols: ['HOURLYUSDT'], limit: 10 }, ASOF);
+    expect(isPage(res)).toBe(false);
+    expect(res).toMatchObject({ category: 'not_found', code: 'minute_rows_unavailable' });
+    // The message names the offending symbol rather than blaming the whole snapshot,
+    // which does carry minute data for MINUTEUSDT.
+    expect((res as { message: string }).message).toContain('HOURLYUSDT');
+  });
+
+  it('serves the request when at least one requested symbol is minute-capable', () => {
+    const res = handleRows(mixed, { symbols: ['HOURLYUSDT', 'MINUTEUSDT'], limit: 200 }, ASOF);
+    if (!isPage(res)) throw new Error(`expected a page, got ${JSON.stringify(res)}`);
+    expect(res.items).toHaveLength(N);
+    // The coarse-only symbol contributes nothing — it is never projected into minute_ts.
+    expect(new Set(res.items.map((r) => r.symbol))).toEqual(new Set(['MINUTEUSDT']));
+    assertGloballyOrdered(res.items);
+  });
+
+  it('keeps an unknown symbol a graceful empty page while the resource is available', () => {
+    const res = handleRows(mixed, { symbols: ['NOPEUSDT'], limit: 10 }, ASOF);
+    if (!isPage(res)) throw new Error(`expected a page, got ${JSON.stringify(res)}`);
+    expect(res.items).toEqual([]);
+  });
+
+  it('still fails snapshot-wide when the request names nothing known and nothing is minute-grain', () => {
+    const barsOnly = {
+      historical: {
+        barsBySymbolAndTimeframe: {
+          HOURLYUSDT: { '1h': [{ tsMs: 3_600_000, open: 1, high: 1, low: 1, close: 1, volume: 1 }] },
+        },
+      },
+    } as unknown as SnapshotBundle;
+    const res = handleRows(barsOnly, { symbols: ['NOPEUSDT'], limit: 10 }, ASOF);
+    expect(isPage(res)).toBe(false);
+    expect(res).toMatchObject({ category: 'not_found', code: 'minute_rows_unavailable' });
   });
 });
