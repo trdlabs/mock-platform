@@ -29,8 +29,14 @@ If `../control-center` is absent (standalone clone), use local repo docs only.
 demo/course/research-средах **без** приватной платформы, бирж, кредов, прод-БД и VPS.
 
 ### Поверхности
-- **Surface A — Ops Read** (потребитель: trading-office): HTTP GET (`ops.3` parity) +
+- **Surface A — Ops Read** (потребитель: trading-office): HTTP GET (`ops.6`, **частичный** parity) +
   WS `/ops/events` replay + Tier-2 `/ops/runs/:id/analysis` (`ops.4`, capability-aware).
+  `ops.6` — это версия контракта, а не равенство наборов роутов: мок отдаёт 11 из 18 платформенных
+  `/ops`-роутов. Не реализованы `positions`, `runs/:id/state`, `runs/:id/positions`,
+  `runs/:id/trades`, `log-refs`, `candidates`, `candidates/:id` — их нечем наполнить из
+  санитизированного снапшота (обращение к ним даёт дефолтный 404 Hono, не `OpsError`).
+  `/ops/runs/:id/analysis` — наоборот, **mock-only**: на платформе такого роута нет вовсе,
+  сверять его byte-identity не с чем. Полная таблица — в README, раздел «Surface A — Ops Read parity».
 - **Surface B — Research Read** (потребитель: trading-lab): контракт + snapshot→DTO адаптер +
   read-only capability descriptor. Транспорт (MCP/HTTP) — будущий инкремент; сейчас только seam.
 
