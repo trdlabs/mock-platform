@@ -6,9 +6,12 @@
 // captured by the older fetch-snapshot tooling (e.g. the demo `2026-06-12-real-top5` fixture) carry the
 // per-kind series but no `rowsBySymbol`, so `/historical/rows` would return empty and downstream overlay
 // backtests get an empty market tape. This fills that gap WITHOUT re-capturing data: one row per bar of
-// the FINEST available timeframe (the backtester consumes rows 1:1 as bars — no re-aggregation — so a
-// `SYMBOL:1h` dataset is served correct 1h candles), with minute-granular oi/funding forward-filled to
-// the bar's open and liquidations summed over the bar window. Taker flow is absent in per-kind data.
+// the FINEST available timeframe, with minute-granular oi/funding forward-filled to the bar's open and
+// liquidations summed over the bar window. Taker flow is absent in per-kind data.
+//
+// Synthesis is legitimate ONLY when that finest timeframe IS `1m` — see `hasMinuteGrainBars`. A coarser
+// source (1h/1d) would yield rows whose `minute_ts` steps by the bar interval while still claiming to be
+// minute data; callers must gate on the grain first (control-center audit P1-2).
 //
 // This is a derivation, not a re-capture: turnover is approximated as `volume * close`, and oi/funding
 // are sampled (last value at-or-before the bar). Snapshots that DO carry `rowsBySymbol` bypass this
@@ -31,6 +34,36 @@ const TIMEFRAME_MS: Readonly<Record<string, number>> = {
   '4h': 14_400_000,
   '1d': 86_400_000,
 };
+
+/** `CanonicalRowV2.minute_ts` names a MINUTE. Only a minute-grain source may back it. */
+export const MINUTE_MS = 60_000;
+
+/**
+ * Interval, in ms, of the bars `synthesizeRowsFromPerKind` would use for `symbol` —
+ * `undefined` when the symbol has no bars at all.
+ *
+ * Callers must check this before serving synthesized rows: bars coarser than a minute
+ * produce rows whose `minute_ts` values step by the BAR interval, not by 60s. Those are
+ * not minute rows, and a consumer cannot tell them apart from real ones
+ * (control-center audit P1-2).
+ */
+export function syntheticRowGrainMs(
+  hist: HistoricalBundle,
+  symbol: string,
+): number | undefined {
+  const byTf = hist.barsBySymbolAndTimeframe?.[symbol];
+  if (byTf === undefined) return undefined;
+  const tf = finestTimeframe(byTf);
+  if (tf === undefined) return undefined;
+  const bars = byTf[tf] ?? [];
+  if (bars.length === 0) return undefined;
+  return TIMEFRAME_MS[tf] ?? (bars.length > 1 ? bars[1]!.tsMs - bars[0]!.tsMs : 3_600_000);
+}
+
+/** Whether `symbol` can back genuine minute rows from its per-kind bars. */
+export function hasMinuteGrainBars(hist: HistoricalBundle, symbol: string): boolean {
+  return syntheticRowGrainMs(hist, symbol) === MINUTE_MS;
+}
 
 /** The non-empty timeframe with the smallest interval (rows must be the finest grain the symbol has). */
 function finestTimeframe(byTf: Readonly<Record<string, readonly OhlcvBar[]>>): string | undefined {

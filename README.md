@@ -82,6 +82,31 @@ empty page, not an error). A multi-symbol request is served as one **globally or
 platform semantics (control-center audit P0-1 / P1-1). This is additive — the older bars-keyed endpoints
 stay as they were.
 
+**Minute grain is required — no silent hourly "minute" rows.** `CanonicalRowV2.minute_ts` names a
+minute, so `/historical/rows` is served only from a minute-grain source: native `rowsBySymbol`, or
+bars whose finest timeframe is `1m`. A bars-only snapshot at 1h/1d grain (e.g.
+`fixtures/2026-06-16-synthetic`, `fixtures/2026-06-12-real-top5`) used to have its hourly bars
+projected into `minute_ts` — rows stepping by an hour while claiming to be minute data, which a
+consumer could not detect and which silently corrupts any backtest over them (control-center audit
+P1-2). Such a snapshot now reports the `rows` resource as `unavailable` in `/historical/discover`,
+omits `1m` from `timeframes`, and answers `/historical/rows` with `404 minute_rows_unavailable`
+rather than an empty page — an empty page is indistinguishable from "your window matched nothing".
+The bars themselves are untouched: they stay in the snapshot and are described, with their own
+timeframe, by `/historical/coverage` and `/historical/discover`. (There is no `/historical/bars`
+endpoint — the historical surface is `discover`, `rows`, `coverage`.)
+
+The guard is scoped to the **requested symbols**, not to the snapshot as a whole: a mixed
+snapshot can carry native minute rows for one symbol and only 1h bars for another, so a request
+naming only coarse-only symbols fails even though the resource is available. A request naming at
+least one minute-capable symbol is served, and coarse-only symbols in it contribute nothing.
+Unknown symbols keep yielding a graceful empty page whenever the resource is available.
+
+The ecosystem default fixture (`fixtures/2026-06-22-to-2026-06-28-vps`) carries native 1m data and
+is unaffected. Note that the *code*-default `MOCK_SNAPSHOT_REF` (`fixtures/2026-06-16-synthetic`) is
+bars-only, so starting the mock without an explicit ref now yields `minute_rows_unavailable` on
+`/historical/rows` — that is the correct answer for that snapshot; set `MOCK_SNAPSHOT_REF` to a
+fixture with native 1m when you need rows.
+
 **Golden fixture.** `data/snapshots/fixtures/historical-golden` is a deterministic snapshot covering all
 canonical kinds, generated from the platform `MANIFEST` by `scripts/make-golden-fixture.ts`. It carries two
 symbols: the 30 verbatim golden `BTCUSDT` rows (the byte-identity source of truth) plus a derived
