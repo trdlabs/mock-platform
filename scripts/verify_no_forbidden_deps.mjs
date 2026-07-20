@@ -1,24 +1,25 @@
 import { readFileSync } from 'node:fs';
 
 // Clarification #1: allowlist is checked against DIRECT dependencies only; denylist scans the whole lockfile.
-// A3 (feature 004): @trading-platform/sdk is admitted as a standalone tarball ONLY — now sourced from a
-// public GitHub release asset (https URL) rather than a vendored ./vendor/*.tgz file.
-const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk', '@trading-platform/sdk']);
+// A3 (feature 004): the shared contract SDK is admitted as a normal registry dependency — @trdlabs/sdk,
+// pinned exactly (shape enforced by scripts/verify_sdk_pin.ts). It used to be @trading-platform/sdk
+// consumed as a non-registry artifact (a vendored ./vendor/*.tgz, later a GitHub release-asset URL)
+// because no npm release existed; that is over, so the carve-outs those forms needed are gone.
+const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk', '@trdlabs/sdk']);
 // bare denylist tokens — the private platform runtime, db, and exchange SDKs.
-// NOTE: '@trading-platform' is intentionally NOT a bare token: the @trading-platform scope is policed
-// separately below so the standalone @trading-platform/sdk can be admitted while everything else under
-// the scope (e.g. a private @trading-platform/platform) stays denied.
+// NOTE: '@trading-platform' is intentionally NOT a bare token — the '@' prefix means the bare-token
+// regex below would not match it anyway. The whole scope is policed separately, and now with no
+// exception at all: @trading-platform/sdk moved to @trdlabs/sdk, so nothing under the legacy scope
+// may appear. A reappearance means a rollback slipped in.
 const DENYLIST = [
   'trading-platform',
   'pg', 'ccxt',
   'binance-api-node', 'node-binance-api', 'bybit-api', 'okx-api',
 ];
-// Non-registry specifier forms that are banned outright. https remote tarballs are also non-registry,
-// so they are policed explicitly below (the SDK release-asset URL is the sole permitted https tarball).
+// Non-registry specifier forms, banned outright with NO exception. https remote tarballs count as
+// non-registry too. The SDK release-asset URL used to be carved out here; every dependency now comes
+// from the registry, so the carve-out is gone and any reintroduction fails.
 const NON_REGISTRY = /^(?:file:|link:|git\+|git:|github:|workspace:|https?:)/;
-// The single permitted non-registry specifier: the SDK GitHub release-asset tarball URL.
-const VENDORED_SDK_NAME = '@trading-platform/sdk';
-const VENDORED_SDK_SPEC = /^https:\/\/github\.com\/.+\/releases\/download\/sdk-v\d+\.\d+\.\d+\/trading-platform-sdk-\d+\.\d+\.\d+\.tgz$/;
 
 const violations = [];
 
@@ -36,10 +37,9 @@ for (const name of Object.keys(deps)) {
   }
 }
 
-// (c) non-registry specifiers — across direct deps + devDeps; the vendored SDK tarball is the sole exception
+// (c) non-registry specifiers — across direct deps + devDeps; no exceptions
 for (const [name, spec] of [...Object.entries(deps), ...Object.entries(devDeps)]) {
   if (typeof spec !== 'string' || !NON_REGISTRY.test(spec)) continue;
-  if (name === VENDORED_SDK_NAME && VENDORED_SDK_SPEC.test(spec)) continue; // allowed: vendored SDK tgz
   violations.push(`dependency '${name}' uses a non-registry specifier '${spec}'`);
 }
 
@@ -55,12 +55,11 @@ for (const bad of DENYLIST) {
     violations.push(`forbidden package '${bad}' present in pnpm-lock.yaml`);
   }
 }
-// @trading-platform scope: deny every @trading-platform/* EXCEPT the standalone @trading-platform/sdk.
+// @trading-platform scope: deny EVERY @trading-platform/*, with no exception. The SDK that used to
+// be carved out here now ships as @trdlabs/sdk from the registry.
 const TP_SCOPE_RE = /(?:^|[\s/'"(])@trading-platform\/([a-z0-9-]+)/gm;
 for (const m of lock.matchAll(TP_SCOPE_RE)) {
-  if (m[1] !== 'sdk') {
-    violations.push(`forbidden package '@trading-platform/${m[1]}' present in pnpm-lock.yaml`);
-  }
+  violations.push(`forbidden package '@trading-platform/${m[1]}' present in pnpm-lock.yaml`);
 }
 
 if (violations.length) {

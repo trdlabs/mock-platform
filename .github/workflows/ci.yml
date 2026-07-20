@@ -23,7 +23,11 @@ jobs:
       - run: pnpm check
       - run: pnpm verify:no-forbidden-deps
       - run: pnpm verify:no-secrets
-      - run: pnpm verify:vendored-sdk
+      - run: pnpm verify:sdk-pin
+      # The golden gate only ever ran in the local `check:ci` chain, never here. Its HARD half
+      # (vendored golden matches its recorded sha256) works fine on a runner; the cross-repo half
+      # WARN-skips without a platform checkout, which is its documented behaviour.
+      - run: pnpm verify:golden-sync
 
   docker:
     runs-on: ubuntu-latest

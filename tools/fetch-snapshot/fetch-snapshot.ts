@@ -119,7 +119,7 @@ interface FundingEntry { tsMs: number; symbol: string; rate: number; }
 interface OIEntry { tsMs: number; symbol: string; openInterestUsd: number; }
 interface LiqEntry { tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number; }
 
-/** Mirrors @trading-platform/sdk CanonicalRowV2 — inlined so tools/ stays import-clean. */
+/** Mirrors @trdlabs/sdk CanonicalRowV2 — inlined so tools/ stays import-clean. */
 interface CanonicalRowV2 {
   schema_version: 2;
   minute_ts: number;
