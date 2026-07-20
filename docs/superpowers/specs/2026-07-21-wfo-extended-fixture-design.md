@@ -135,8 +135,8 @@ Any failed step → non-zero exit with a specific message.
 
 - A fixture directory **with** `coverage.json` → **enforce**: any deviation is a
   non-zero exit.
-- A fixture directory **without** `coverage.json` (the 5 legacy fixtures + golden) →
-  one `WARN (legacy — no declared coverage)` line, exit 0.
+- A fixture directory **without** `coverage.json` (all existing coverage-less
+  fixtures) → one `WARN (legacy — no declared coverage)` line, exit 0.
 
 `verify_fixtures.ts` scans **exactly two explicit roots** —
 `data/snapshots/fixtures/*` and `data/snapshots/wfo/*` — **not** `data/snapshots/**`,
@@ -151,12 +151,19 @@ so it never picks up temporary or raw VPS refs left elsewhere under `data/snapsh
 
 Five steps; no VPS write; the fixture is committed only at the end, only if green.
 
+**Probe window (fixed).** All VPS reads — the ranking aggregate and the raw pull — use
+one window: the **50 full UTC days** `[probeFrom, probeTo)`, where
+`probeTo = start_of(latest_complete_UTC_day + 1)` and
+`probeFrom = probeTo − 50·86400·1000`. It is recorded verbatim in provenance, so the
+ranking, the pull, and the chosen 42-day sub-window are all reproducible. 50 ≥ 42 gives
+the slack to slide the anchor (§2.3).
+
 ### 2.1 Deterministic symbol ranking (frozen ahead of the probe)
 
 - **Primary:** `HUSDT` (SSOT primary), always included.
-- **Top-4 by liquidity:** ranked by summed 1m turnover (`CanonicalRowV2.turnover`
-  over every minute of the window) over the **same 48–50 day VPS window** used for the
-  raw pull, computed **excluding HUSDT**; ties broken by `symbol ASC`.
+- **Top-4 by liquidity:** ranked by summed 1m turnover (`CanonicalRowV2.turnover` over
+  every minute of the probe window `[probeFrom, probeTo)`), computed **excluding
+  HUSDT**; ties broken by `symbol ASC`.
 - The ranking source is a VPS aggregate. If that aggregate is **unavailable**, this is
   a **blocker** — do **not** fall back to ranking from the committed 7-day slice at
   execution time (that would make selection non-deterministic).
@@ -164,8 +171,8 @@ Five steps; no VPS write; the fixture is committed only at the end, only if gree
 
 ### 2.2 Read-only pull (one VPS visit)
 
-Pull raw native-1m historical for the **5 selected symbols** over a *generous* window
-(the latest ~48–50 days) into a **local temporary** ref under `data/snapshots/` that is
+Pull raw native-1m historical for the **5 selected symbols** over the probe window
+`[probeFrom, probeTo)` into a **local temporary** ref under `data/snapshots/` that is
 **not committed** and lives outside the two validator scan roots. This gives slack for
 choosing the 42-day anchor offline without further VPS round-trips.
 
@@ -201,7 +208,12 @@ Records enough to reproduce the selection and trimming and to distinguish
 "absent on the VPS" from "intentional trimming":
 
 - note: rows filtered to the intersection of the 5 source series;
-- per symbol: `sourceRows` → `finalRows`;
+- per symbol, the full attrition chain (so VPS absence is distinguishable from
+  trimming):
+  - `rawRowsInProbeWindow` — rows the VPS returned over `[probeFrom, probeTo)`;
+  - `rowsInSelectedWindowBeforeIntersection` — rows inside the chosen `[fromMs, toMs)`;
+  - `finalRowsAfterIntersection` — rows kept on the common grid `G`;
+  - `droppedByWindow` = raw − in-window; `droppedByIntersection` = in-window − final;
 - `|G|` (common grid size) and the chosen `[fromMs, toMs)`;
 - the ranking source and the **tie-break algorithm** (`top-4 by summed 1m turnover,
   excl. HUSDT, ties by symbol ASC`);
@@ -216,8 +228,9 @@ green. Only then commit: bundle + `manifest.json` + `checksums.json` + `coverage
 ### 2.7 Where T2 lives — image stays unchanged
 
 The Dockerfile does `COPY data/snapshots/fixtures` only, so committing T2 under
-`data/snapshots/wfo/` keeps the demo image byte-for-byte unchanged (the card's
-"default image does not grow" acceptance gate). The ref is `wfo/<...>-vps-wfo42d`,
+`data/snapshots/wfo/` keeps the **T2 payload out of the image** (the card's "default
+image does not grow" acceptance gate — see §4 for the exact assertions). The ref is
+`wfo/<...>-vps-wfo42d`,
 resolved relative to `MOCK_SNAPSHOT_DIR` (`./data/snapshots`). Embedding T2 into an
 image is deferred to the separate rollout (card rollout step 4).
 
@@ -247,10 +260,18 @@ image is deferred to the separate rollout (card rollout step 4).
   malformed sidecar schema, symbol-set mismatch, missing/empty symbol, bars-only,
   duplicate `minute_ts`, misaligned `minute_ts`, non-strict-increasing, non-identical
   grids, total-gap over budget, consecutive-gap over budget, edge-gap over budget.
+  - **window containment** as its own case: a row at `fromMs − 60000` fails; a row at
+    exactly `toMs` fails (half-open upper bound);
+  - **boundary pairs** for both budgets: `gap == budget` passes, `budget + 1` fails
+    (total-gap and max-consecutive-gap each).
 - **Runtime smoke:** `openSnapshot(rootDir, "wfo/<ref>")` resolves and loads the T2
   fixture — proving the nested ref addresses locally.
-- **Docker check (inverse):** the built image does **not** contain the T2 fixture and
-  its size is unchanged versus `origin/main`.
+- **Docker check (inverse), three assertions** (new code may shift the runtime image a
+  little, so *not* exact total-size equality):
+  - `data/snapshots/wfo` is **absent** from the built image (`docker run … ls` / layer
+    inspection);
+  - the T2 bundle payload appears in **no** layer;
+  - no image-size growth on the order of the T2 payload (~20 MB) versus `origin/main`.
 - **CI:** `verify:fixtures` runs in `check:ci`; legacy fixtures WARN (exit 0), T2
   enforces green. Full `pnpm check:ci` green.
 
@@ -265,12 +286,16 @@ image is deferred to the separate rollout (card rollout step 4).
 
 No manifest schema / loader / compat changes. No `snapshot.2`. No ecosystem-default,
 lab/office env, SSOT tier table, or consumer-selection changes. No embedding of T2 in
-any image. No changes to the 5 legacy fixtures (they stay coverage-less and WARN).
+any image. No changes to the existing coverage-less fixtures (they stay coverage-less
+and WARN).
 
 ## §7. Rollback
 
-- Item 3: drop `verify:fixtures` from `check:ci`, or leave it (legacy fixtures WARN, so
-  it is a no-op without a `coverage.json`). Self-contained.
+- Item 3 is **not** independent once T2 exists: T2's committed `coverage.json` needs a
+  mandatory admission/drift gate. So the order is **remove T2 first (or keep
+  `verify:fixtures`)**, and only then may the validator be dropped from `check:ci`. With
+  no `coverage.json` anywhere, `verify:fixtures` is a no-op (every fixture WARNs), so
+  leaving it in place is the safe default.
 - Item 1: remove the `data/snapshots/wfo/<ref>/` directory; nothing runtime depends on
   it (selection is explicit and out of scope here).
 - Item 5: revert the two one-line default swaps; independent of items 1/3.
