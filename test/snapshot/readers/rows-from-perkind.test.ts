@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { HistoricalBundle } from '../../../src/contract/snapshot/bundle.js';
-import { synthesizeRowsFromPerKind } from '../../../src/snapshot/readers/rows-from-perkind.js';
+import {
+  synthesizeRowsFromPerKind,
+  syntheticRowGrainMs,
+  hasMinuteGrainBars,
+  MINUTE_MS,
+} from '../../../src/snapshot/readers/rows-from-perkind.js';
 import { readRows } from '../../../src/snapshot/readers/rows.js';
 import type { SnapshotBundle } from '../../../src/contract/snapshot/bundle.js';
 
@@ -99,39 +104,113 @@ describe('readRows fallback to synthesis', () => {
     expect(readRows(b, { symbol: 'AAAUSDT' })).toEqual(explicit);
   });
 
-  it('synthesizes from per-kind when rowsBySymbol is absent', () => {
-    const rows = readRows(bundleWith(hist()), { symbol: 'AAAUSDT' });
-    expect(rows.length).toBe(2);
-    expect(rows[0]!.open).toBe(10);
+  // CanonicalRowV2.minute_ts names a minute. Hourly bars synthesized into it produce rows
+  // that step by an hour while claiming to be minute rows — a consumer cannot tell them
+  // apart from real ones, so a backtest over them is silently wrong (audit P1-2).
+  it('refuses to synthesize minute rows from 1h bars', () => {
+    expect(readRows(bundleWith(hist()), { symbol: 'AAAUSDT' })).toEqual([]);
   });
 
-  it('applies the fromMs/toMs window to synthesized rows', () => {
+  it('synthesizes from per-kind when the finest bars ARE minute-grain', () => {
     const t0 = 1_700_000_000_000;
-    const rows = readRows(bundleWith(hist()), { symbol: 'AAAUSDT', fromMs: t0 + HOUR });
-    expect(rows.map((r) => r.minute_ts)).toEqual([t0 + HOUR]);
+    const h = hist();
+    const minuteBars = {
+      ...h,
+      barsBySymbolAndTimeframe: {
+        AAAUSDT: {
+          ...h.barsBySymbolAndTimeframe.AAAUSDT,
+          '1m': [
+            { tsMs: t0, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+            { tsMs: t0 + MINUTE_MS, open: 11, high: 13, low: 10, close: 12, volume: 200 },
+          ],
+        },
+      },
+    };
+    const rows = readRows(bundleWith(minuteBars), { symbol: 'AAAUSDT' });
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.open).toBe(10);
+    expect(rows[1]!.minute_ts - rows[0]!.minute_ts).toBe(MINUTE_MS);
+  });
+
+  it('applies the fromMs/toMs window to synthesized minute rows', () => {
+    const t0 = 1_700_000_000_000;
+    const h = hist();
+    const minuteBars = {
+      ...h,
+      barsBySymbolAndTimeframe: {
+        AAAUSDT: {
+          '1m': [
+            { tsMs: t0, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+            { tsMs: t0 + MINUTE_MS, open: 11, high: 13, low: 10, close: 12, volume: 200 },
+          ],
+        },
+      },
+    };
+    const rows = readRows(bundleWith(minuteBars), { symbol: 'AAAUSDT', fromMs: t0 + MINUTE_MS });
+    expect(rows.map((r) => r.minute_ts)).toEqual([t0 + MINUTE_MS]);
+  });
+});
+
+describe('minute-grain detection', () => {
+  it('reports the synthesis grain, and only 1m counts as minute-grain', () => {
+    const t0 = 1_700_000_000_000;
+    expect(syntheticRowGrainMs(hist(), 'AAAUSDT')).toBe(HOUR);
+    expect(hasMinuteGrainBars(hist(), 'AAAUSDT')).toBe(false);
+
+    const minute = {
+      ...hist(),
+      barsBySymbolAndTimeframe: {
+        AAAUSDT: { '1m': [{ tsMs: t0, open: 1, high: 1, low: 1, close: 1, volume: 1 }] },
+      },
+    };
+    expect(syntheticRowGrainMs(minute, 'AAAUSDT')).toBe(MINUTE_MS);
+    expect(hasMinuteGrainBars(minute, 'AAAUSDT')).toBe(true);
+  });
+
+  it('reports undefined for a symbol with no bars', () => {
+    expect(syntheticRowGrainMs(hist(), 'NOPEUSDT')).toBeUndefined();
+    expect(hasMinuteGrainBars(hist(), 'NOPEUSDT')).toBe(false);
   });
 });
 
 describe('readRows on the real demo fixture (2026-06-12-real-top5, per-kind only, no rowsBySymbol)', () => {
-  it('serves non-empty CanonicalRowV2 rows synthesized from the real 1h bars', async () => {
+  async function realTop5(): Promise<SnapshotBundle> {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');
-    const bundle = JSON.parse(
+    return JSON.parse(
       readFileSync(
         resolve(__dirname, '../../../data/snapshots/fixtures/2026-06-12-real-top5/ops/bundle.json'),
         'utf8',
       ),
     ) as SnapshotBundle;
+  }
 
+  // This fixture's finest bars are 1h. It used to serve ~161 hour-spaced rows as minute
+  // rows — the exact silent divergence audit P1-2 describes, and the reason this test now
+  // asserts the opposite of what it originally did.
+  it('serves NO rows: its finest bars are hourly, not minute-grain', async () => {
+    const bundle = await realTop5();
     expect(bundle.historical?.rowsBySymbol).toBeUndefined(); // fixture predates rowsBySymbol
-    const rows = readRows(bundle, { symbol: 'BEATUSDT' });
-    expect(rows.length).toBeGreaterThan(100); // ~161 1h bars
-    const r = rows[0]!;
-    expect(r.schema_version).toBe(2);
-    expect(r.symbol).toBe('BEATUSDT');
-    expect(Number.isFinite(r.open) && Number.isFinite(r.close)).toBe(true);
-    expect(r.has_oi).toBe(true); // real-top5 carries minute-granular open interest
-    // ascending, hour-spaced
-    expect(rows[1]!.minute_ts - rows[0]!.minute_ts).toBe(3_600_000);
+    expect(syntheticRowGrainMs(bundle.historical!, 'BEATUSDT')).toBe(3_600_000);
+    expect(readRows(bundle, { symbol: 'BEATUSDT' })).toEqual([]);
+  });
+
+  it('never emits rows whose spacing is not one minute', async () => {
+    const bundle = await realTop5();
+    for (const symbol of Object.keys(bundle.historical!.barsBySymbolAndTimeframe)) {
+      const rows = readRows(bundle, { symbol });
+      for (let i = 1; i < rows.length; i++) {
+        expect(rows[i]!.minute_ts - rows[i - 1]!.minute_ts).toBe(MINUTE_MS);
+      }
+    }
+  });
+
+  // The bars themselves are untouched — they stay reachable through the bars-keyed
+  // endpoints, which state their own timeframe. Only the minute-row projection is refused.
+  it('still carries the underlying hourly bars', async () => {
+    const bundle = await realTop5();
+    const bars = bundle.historical!.barsBySymbolAndTimeframe['BEATUSDT']?.['1h'] ?? [];
+    expect(bars.length).toBeGreaterThan(100);
+    expect(bars[1]!.tsMs - bars[0]!.tsMs).toBe(3_600_000);
   });
 });

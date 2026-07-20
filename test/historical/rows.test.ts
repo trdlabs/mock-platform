@@ -136,6 +136,41 @@ describe('handleRows: global multi-symbol ordering', () => {
     expect(JSON.stringify(withDup.items)).toBe(JSON.stringify(clean.items));
   });
 
+  // A bars-only 1h/1d snapshot has nothing that can back minute rows. Returning an empty
+  // page would be indistinguishable from "your window matched nothing", so the handler
+  // fails loudly instead — audit P1-2.
+  it('returns minute_rows_unavailable for a bars-only 1h/1d snapshot', () => {
+    const barsOnly = {
+      historical: {
+        barsBySymbolAndTimeframe: {
+          BTCUSDT: { '1h': [{ tsMs: 3_600_000, open: 1, high: 1, low: 1, close: 1, volume: 1 }] },
+        },
+      },
+    } as unknown as SnapshotBundle;
+    const res = handleRows(barsOnly, { symbols: ['BTCUSDT'], limit: 10 }, ASOF);
+    expect(isPage(res)).toBe(false);
+    expect(res).toMatchObject({ category: 'not_found', code: 'minute_rows_unavailable' });
+  });
+
+  it('still serves rows when the snapshot has minute-grain bars but no native rows', () => {
+    const minuteBars = {
+      historical: {
+        barsBySymbolAndTimeframe: {
+          BTCUSDT: {
+            '1m': [
+              { tsMs: 60_000, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+              { tsMs: 120_000, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+            ],
+          },
+        },
+      },
+    } as unknown as SnapshotBundle;
+    const res = handleRows(minuteBars, { symbols: ['BTCUSDT'], limit: 10 }, ASOF);
+    if (!isPage(res)) throw new Error('expected a page');
+    expect(res.items).toHaveLength(2);
+    expect(res.items[1]!.minute_ts - res.items[0]!.minute_ts).toBe(60_000);
+  });
+
   it('half-open range applies to every symbol in a multi-symbol request', () => {
     const page = handleRows(
       bundle,

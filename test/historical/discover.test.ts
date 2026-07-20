@@ -33,13 +33,59 @@ describe('buildHistoricalDiscover', () => {
     expect(buildHistoricalDiscover(withHistorical).historicalContractVersion).toBe('historical.2');
   });
 
-  it('lists "rows" first and available when a historical bundle is present', () => {
+  it('lists "rows" first, with its filters and page cap, when a historical bundle is present', () => {
     const out = buildHistoricalDiscover(withHistorical);
     const rows = out.resources[0]!;
     expect(rows.name).toBe('rows');
-    expect(rows.availability).toBe('available');
     expect(rows.supportedFilters).toContain('symbols');
     expect(rows.pagination).toEqual({ cursor: true, maxPageItems: 200 });
+  });
+
+  it('marks "rows" available when a symbol has native minute rows', () => {
+    const withRows = {
+      historical: {
+        barsBySymbolAndTimeframe: {},
+        rowsBySymbol: { BTCUSDT: [{ minute_ts: 1, symbol: 'BTCUSDT' }] },
+      },
+    } as unknown as SnapshotBundle;
+    const rows = buildHistoricalDiscover(withRows).resources.find((r) => r.name === 'rows')!;
+    expect(rows.availability).toBe('available');
+  });
+
+  it('marks "rows" available when the finest bars are minute-grain', () => {
+    const withMinuteBars = {
+      historical: {
+        barsBySymbolAndTimeframe: {
+          BTCUSDT: { '1m': [{ tsMs: 60_000, open: 1, high: 1, low: 1, close: 1, volume: 1 }] },
+        },
+        rowsBySymbol: {},
+      },
+    } as unknown as SnapshotBundle;
+    const out = buildHistoricalDiscover(withMinuteBars);
+    expect(out.resources.find((r) => r.name === 'rows')!.availability).toBe('available');
+    expect(out.timeframes).toContain('1m');
+  });
+
+  // A bars-only 1h/1d snapshot cannot back minute rows. Advertising the resource as
+  // available (and 1m as a timeframe) is what let hourly bars be served as minute rows
+  // — control-center audit P1-2.
+  it('marks "rows" unavailable, and omits 1m, for a bars-only 1h/1d snapshot', () => {
+    const barsOnly = {
+      historical: {
+        barsBySymbolAndTimeframe: {
+          BTCUSDT: {
+            '1h': [{ tsMs: 3_600_000, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+            '1d': [{ tsMs: 86_400_000, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+          },
+        },
+      },
+    } as unknown as SnapshotBundle;
+    const out = buildHistoricalDiscover(barsOnly);
+    expect(out.resources.find((r) => r.name === 'rows')!.availability).toBe('unavailable');
+    expect(out.timeframes).not.toContain('1m');
+    // coverage stays available — the bars are still discoverable, at their own timeframe
+    expect(out.resources.find((r) => r.name === 'historical-coverage')!.availability).toBe('available');
+    expect(out.symbols).toContain('BTCUSDT');
   });
 
   it('marks "rows" unavailable when the historical bundle is absent', () => {

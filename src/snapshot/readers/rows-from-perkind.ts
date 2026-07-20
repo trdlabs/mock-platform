@@ -32,6 +32,36 @@ const TIMEFRAME_MS: Readonly<Record<string, number>> = {
   '1d': 86_400_000,
 };
 
+/** `CanonicalRowV2.minute_ts` names a MINUTE. Only a minute-grain source may back it. */
+export const MINUTE_MS = 60_000;
+
+/**
+ * Interval, in ms, of the bars `synthesizeRowsFromPerKind` would use for `symbol` —
+ * `undefined` when the symbol has no bars at all.
+ *
+ * Callers must check this before serving synthesized rows: bars coarser than a minute
+ * produce rows whose `minute_ts` values step by the BAR interval, not by 60s. Those are
+ * not minute rows, and a consumer cannot tell them apart from real ones
+ * (control-center audit P1-2).
+ */
+export function syntheticRowGrainMs(
+  hist: HistoricalBundle,
+  symbol: string,
+): number | undefined {
+  const byTf = hist.barsBySymbolAndTimeframe?.[symbol];
+  if (byTf === undefined) return undefined;
+  const tf = finestTimeframe(byTf);
+  if (tf === undefined) return undefined;
+  const bars = byTf[tf] ?? [];
+  if (bars.length === 0) return undefined;
+  return TIMEFRAME_MS[tf] ?? (bars.length > 1 ? bars[1]!.tsMs - bars[0]!.tsMs : 3_600_000);
+}
+
+/** Whether `symbol` can back genuine minute rows from its per-kind bars. */
+export function hasMinuteGrainBars(hist: HistoricalBundle, symbol: string): boolean {
+  return syntheticRowGrainMs(hist, symbol) === MINUTE_MS;
+}
+
 /** The non-empty timeframe with the smallest interval (rows must be the finest grain the symbol has). */
 function finestTimeframe(byTf: Readonly<Record<string, readonly OhlcvBar[]>>): string | undefined {
   const present = Object.keys(byTf).filter((tf) => (byTf[tf]?.length ?? 0) > 0);

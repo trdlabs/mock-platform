@@ -2,6 +2,7 @@ import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
 import type { HistoricalCapabilityDescriptor, HistoricalCapabilities, HistoricalResourceDescriptor, Timeframe } from '../../contract/historical-read/dto.js';
 import { HISTORICAL_READ_CONTRACT_VERSION } from '../../contract/historical-read/version.js';
 import { MAX_PAGE } from '../../ops/pagination.js';
+import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
 
 const CAPABILITIES: HistoricalCapabilities = {
   readOnly: true,
@@ -40,8 +41,11 @@ export function buildHistoricalDiscover(bundle: SnapshotBundle): HistoricalCapab
   // Native CanonicalRowV2 rows are minute-grain (the /historical/rows resource), so advertise 1m
   // whenever any symbol has native rows — even when bars only cover 1h/1d — so a `SYMBOL:1m` dataset
   // resolves against them. Mirrors the real platform, where minute rows back a 1m dataset.
+  // Minute-grain bars count too: they can back genuine minute rows. Coarser bars cannot
+  // (audit P1-2), so a bars-only 1h/1d snapshot advertises neither 1m nor the rows resource.
   const hasNativeRows = hist
     ? Object.values(hist.rowsBySymbol ?? {}).some((rows) => rows.length > 0)
+      || Object.keys(hist.barsBySymbolAndTimeframe ?? {}).some((s) => hasMinuteGrainBars(hist, s))
     : false;
   const presentTimeframes = hist
     ? ([...new Set([
@@ -53,7 +57,14 @@ export function buildHistoricalDiscover(bundle: SnapshotBundle): HistoricalCapab
   return {
     historicalContractVersion: HISTORICAL_READ_CONTRACT_VERSION,
     capabilities: CAPABILITIES,
-    resources: hist ? RESOURCES : RESOURCES.map((r) => ({ ...r, availability: 'unavailable' as const })),
+    // The rows resource is only "available" when something can actually back minute rows.
+    // A bars-only 1h/1d snapshot marks it unavailable rather than serving hourly bars as
+    // minute rows; historical-coverage stays available so the bars remain discoverable.
+    resources: hist
+      ? RESOURCES.map((r) => (r.name === 'rows' && !hasNativeRows
+        ? { ...r, availability: 'unavailable' as const }
+        : r))
+      : RESOURCES.map((r) => ({ ...r, availability: 'unavailable' as const })),
     symbols,
     timeframes: presentTimeframes,
   };

@@ -2,10 +2,23 @@ import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
 import type { RowsPage, CanonicalRowV2 } from '../../contract/historical-read/dto.js';
 import type { OpsError } from '../../contract/common/errors.js';
 import { readRows } from '../../snapshot/readers/rows.js';
+import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
 import { paginate, invalidCursor } from '../../ops/pagination.js';
 
 function unavailable(): OpsError {
   return { category: 'not_found', code: 'historical_unavailable', message: 'historical data not present in this snapshot' };
+}
+
+/** No minute-grain source anywhere in the snapshot — see the P1-2 note in readRows. Distinct
+ *  code from `historical_unavailable`: the snapshot HAS historical data, just not at minute
+ *  grain, and the bars remain reachable through the bars-keyed endpoints. */
+function noMinuteGrain(): OpsError {
+  return {
+    category: 'not_found',
+    code: 'minute_rows_unavailable',
+    message: 'this snapshot carries no minute-grain data; /historical/rows is unavailable '
+      + '(coarser bars are served by the bars endpoints, which state their own timeframe)',
+  };
 }
 
 export function handleRows(
@@ -15,6 +28,15 @@ export function handleRows(
   cursor?: string,
 ): RowsPage | OpsError {
   if (!bundle.historical) return unavailable();
+
+  // Fail loudly rather than serving an empty page: on a bars-only 1h/1d snapshot an empty
+  // page is indistinguishable from "your window matched nothing", which is exactly the
+  // silent-divergence this guard exists to remove. discover marks the resource unavailable
+  // in the same case, so the two surfaces agree.
+  const hist = bundle.historical;
+  const minuteGrainAvailable = Object.values(hist.rowsBySymbol ?? {}).some((r) => r.length > 0)
+    || Object.keys(hist.barsBySymbolAndTimeframe ?? {}).some((s) => hasMinuteGrainBars(hist, s));
+  if (!minuteGrainAvailable) return noMinuteGrain();
 
   const { fromMs, toMs, limit } = params;
   const symbols = params.symbols ?? [];
