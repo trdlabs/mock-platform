@@ -36,12 +36,23 @@ describe('verify_no_forbidden_deps', () => {
   it('fails on the private platform package in the lockfile', () => {
     expectFail(fixture({ dependencies: {} }, "packages:\n  '@trading-platform/platform@1.0.0':\n"), /@trading-platform\/platform/i);
   });
-  it('allows the vendored @trading-platform/sdk in the lockfile (A3 carve-out)', () => {
-    // feature 004: @trading-platform/sdk is the one admitted @trading-platform/* scope member.
-    expect(() => runOK(fixture({ dependencies: {} }, "packages:\n  '@trading-platform/sdk@0.3.0':\n"))).not.toThrow();
+  it('fails on @trading-platform/sdk in the lockfile — the carve-out is gone', () => {
+    // It used to be the one admitted @trading-platform/* member, because no npm release existed.
+    // The SDK ships as @trdlabs/sdk now, so the legacy scope has no exception left: seeing it
+    // again means a rollback slipped in.
+    expectFail(fixture({ dependencies: {} }, "packages:\n  '@trading-platform/sdk@0.9.3':\n"), /@trading-platform\/sdk/i);
+  });
+  it('accepts @trdlabs/sdk as a direct dependency', () => {
+    expect(() => runOK(fixture({ dependencies: { '@trdlabs/sdk': '0.11.0' } }))).not.toThrow();
   });
   it('fails on a non-registry specifier', () => {
     expectFail(fixture({ dependencies: {}, devDependencies: { x: 'file:./x' } }), /non-registry/i);
+  });
+  it('fails on an https tarball specifier — no SDK carve-out remains', () => {
+    expectFail(
+      fixture({ dependencies: { '@trdlabs/sdk': 'https://github.com/trdlabs/sdk/releases/download/sdk-v0.11.0/trdlabs-sdk-0.11.0.tgz' } }),
+      /non-registry/i,
+    );
   });
   it('allows transitive prod deps in the lockfile (allowlist is direct-deps only)', () => {
     // a transitive package that is NOT in the runtime allowlist must NOT trip the allowlist check

@@ -73,29 +73,46 @@ Read-only; sha256-hashed token allowlist; loopback by default; fail-closed if bo
 Snapshots are verified on load (manifest + checksums + version-compat + secret-scan). The exporter/sanitizer
 runs operator-side near the private platform and is out of scope here — see `docs/contracts/`.
 
-## Vendored SDK (`@trading-platform/sdk`)
+## Shared SDK (`@trdlabs/sdk`)
 
-The live bot-results contract types come from `@trading-platform/sdk/ops-read`, vendored as
-`vendor/trading-platform-sdk-<version>.tgz` (a `file:` dependency — no registry/auth needed, offline-installable).
-The mock re-exports them through the single seam `src/contract/ops-read/dto.sdk.ts` (the only contract file
-allowed to import the SDK; `verify:contract-isolation` enforces this) — `research-read/dto.ts` stays SDK-free.
-To refresh it: in `trading-platform`, run `npm run build:sdk`, then `npm pack` in `packages/sdk` with
-`--pack-destination <mock>/vendor/`, bump the specifier in `package.json`, then `pnpm install` and run
-`pnpm check:ci` (the `verify:vendored-sdk` gate asserts the specifier shape and the embedded `ops.3`).
+The shared contract types come from the **published npm package** `@trdlabs/sdk`, pinned to an **exact
+version** (no range) in `package.json`. Nothing is vendored and nothing is fetched from a tarball URL.
+
+Two contract files — and only these two — may import it, enforced by `verify:contract-isolation`:
+
+| Seam | Subpath | What it re-exports |
+| --- | --- | --- |
+| `src/contract/ops-read/dto.sdk.ts` | `@trdlabs/sdk/ops-read` | live bot-results primitives + `OPS_READ_CONTRACT_VERSION` |
+| `src/contract/historical-read/dto.sdk.ts` | `@trdlabs/sdk/historical` | `CanonicalRowV2` |
+
+Everything else in `src/contract/**` — notably `research-read/dto.ts` — stays dependency-free and
+extractable. The conformance harness comes from the same package (`@trdlabs/sdk/conformance`); see
+Surface C below.
+
+**To move to a new SDK version:** publish it from the `trdlabs/sdk` repo, then bump *both* the
+`package.json` dependency and `EXPECTED_SDK_VERSION` in `scripts/verify_sdk_pin.ts` — the gate fails if
+the two disagree, so they cannot drift. Run `pnpm install` and `pnpm check:ci`.
+
+> **History.** The SDK used to be `@trading-platform/sdk`, delivered first as a vendored
+> `vendor/*.tgz` and later as a GitHub release-asset URL, because no npm release existed. That is over
+> (control-center initiative `mock-contract-parity`, item 5). The legacy package name is now a
+> *forbidden* import everywhere in the contract layer, and non-registry specifiers have no carve-out
+> left — both are asserted by tests, so a partial revert cannot pass CI.
 
 ## CI guard
 
 Every PR to `main` (and every push to `main`) runs `.github/workflows/ci.yml` — two parallel jobs:
 
-- **checks:** `pnpm check` (typecheck + contract-isolation + tests) → `pnpm verify:no-forbidden-deps` → `pnpm verify:no-secrets` → `pnpm verify:vendored-sdk`
+- **checks:** `pnpm check` (typecheck + contract-isolation + tests) → `pnpm verify:no-forbidden-deps` → `pnpm verify:no-secrets` → `pnpm verify:sdk-pin` → `pnpm verify:golden-sync`
 - **docker:** `docker build` (public deps only, no registry/private access)
 
 What it enforces, automatically:
 - types + tests (`pnpm check`)
 - `src/contract/**` import isolation
 - no secrets / forbidden patterns in committed data files (`.json`/`.parquet`/`.env`/… anywhere; `src`/`test`/`docs` and `.gitkeep` excluded)
-- no private/forbidden dependencies — runtime `dependencies` allowlist + a denylist (`trading-platform`, `pg`, `ccxt`, exchange SDKs, and every `@trading-platform/*` **except** the standalone `@trading-platform/sdk`) across the lockfile + a ban on `file:`/`link:`/`git+`/`workspace:` specifiers, with one carve-out: the vendored `./vendor/trading-platform-sdk-*.tgz` (A3, feature 004)
-- the vendored SDK tarball matches its `package.json` specifier and carries the expected `ops.3` (`verify:vendored-sdk`)
+- no private/forbidden dependencies — runtime `dependencies` allowlist + a denylist (`trading-platform`, `pg`, `ccxt`, exchange SDKs, and **every** `@trading-platform/*` with no exception) across the lockfile + a ban on `file:`/`link:`/`git+`/`https:`/`workspace:` specifiers, also with no exception
+- the SDK is an exact npm pin whose installed `SDK_VERSION` matches, carrying the expected `ops.6` and exporting the conformance harness (`verify:sdk-pin`)
+- the vendored platform golden matches its recorded sha256, and byte-matches the platform source when that repo is reachable (`verify:golden-sync`)
 - the image builds with public deps only
 
 Run all of it locally with `pnpm check:ci`.
@@ -168,13 +185,17 @@ the platform cannot be in — it always has a historical store — so there is n
 contradict. What a consumer must not assume is that a *shape* seen against the mock's error path will
 match the platform's; only the success path is contract-guaranteed.
 
-**Conformance (mock == real).** The shared conformance harness is vendored under
-`test/conformance/_vendored/`, sourced from the **SDK repo** (`trdlabs/sdk`,
-`conformance/historical.conformance.ts`) and kept in lockstep by `verify:harness-sync` (wired into
-`check:ci`). Running it against this mock and against the real platform over the golden fixture proves
-**byte-identity** (30 rows) — the mock's `/historical/rows` response is indistinguishable from the real one.
-The harness reports checks a dataset cannot exercise as *skips*; the mock's conformance test fails on any
-non-empty skip list, so coverage cannot shrink silently.
+**Conformance (mock == real).** The shared conformance harness is imported straight from the pinned
+npm package — `@trdlabs/sdk/conformance` — so the mock and every other consumer run the *same*
+published artifact. There is no vendored copy and no sync gate for it; `verify:sdk-pin` asserts the
+subpath is exported by the pinned version. Running it against this mock and against the real platform
+over the golden fixture proves **byte-identity** (30 rows) — the mock's `/historical/rows` response is
+indistinguishable from the real one. The harness reports checks a dataset cannot exercise as *skips*;
+the mock's conformance test fails on any non-empty skip list, so coverage cannot shrink silently.
+
+The golden fixture itself is still vendored (`test/conformance/_vendored/platform-historical-golden.json`),
+because the platform — not the SDK — owns it. `verify:golden-sync` keeps it honest: a hard sha256 check
+always, plus a byte-compare against the platform repo whenever that checkout is reachable.
 
 ## Surface B — Research Read (trading-lab, stdio MCP gateway)
 

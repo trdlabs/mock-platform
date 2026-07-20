@@ -12,22 +12,27 @@
 Полный аудит: control-center
 [`docs/analysis/09-mock-platform-audit.md`](../../../control-center/docs/analysis/09-mock-platform-audit.md).
 
-## mock-contract-parity — `proposed`
+## mock-contract-parity — локальная часть закрыта
 
-- `/historical/rows`: полуоткрытый диапазон `[fromMs, toMs)` вместо
-  инклюзивного по обоим концам (`src/snapshot/readers/rows.ts:17-20`) — P0-1;
-  фикс только после того, как в sdk-harness появится красный boundary-кейс.
-- Глобальный порядок `(minute_ts ASC, symbol ASC)` при multi-symbol запросе
-  вместо конкатенации по символам (`src/historical/handlers/rows.ts:25-32`).
-- Bars-only снапшоты: не отдавать синтезированные часовые строки как минутные
-  без маркера (`src/snapshot/readers/rows-from-perkind.ts:78-135`) —
-  `rows: unavailable` либо явный provenance-флаг.
-- Миграция пина на `@trdlabs/sdk` (npm) с legacy `@trading-platform/sdk`
-  0.9.3 tarball; harness — из репо sdk (сейчас vendored-копия из platform,
-  гейт `scripts/verify_harness_sync.mjs`).
-- Док-дрейф: `docs/contracts/snapshot-format.md` (13 фактических top-level
-  ключей vs 11 задокументированных, пример `ops.3` → `ops.6`);
-  `/ops/runs/:id/analysis` пометить как mock-only поверхность.
+Все пункты, за которые отвечал mock-platform, сделаны. Канонический статус
+инициативы — в карточке (ссылка выше); здесь только локальный срез.
+
+- ✅ `/historical/rows`: полуоткрытый диапазон `[fromMs, toMs)` (P0-1) и
+  глобальный порядок `(minute_ts ASC, symbol ASC)` при multi-symbol запросе
+  (P1-1). Golden-фикстура получила второй символ (`ETHUSDT`), а conformance-тест
+  падает на любом непустом skip-списке — иначе ordering-кейс «проходил» скипом.
+- ✅ Bars-only снапшоты (P1-2): строки отдаются только из minute-grain источника,
+  иначе `rows: unavailable` в discover и `404 minute_rows_unavailable`. Гвард
+  привязан к запросу, а не к снапшоту: смешанный снапшот не может ответить
+  пустой страницей на запрос coarse-only символа.
+- ✅ Пин на `@trdlabs/sdk` (точная npm-версия) вместо legacy
+  `@trading-platform/sdk`-tarball; vendored harness удалён, conformance идёт из
+  `@trdlabs/sdk/conformance`. Гейты: `verify:sdk-pin` (точность пина + `ops.6` +
+  наличие `/conformance`), `verify:golden-sync` (platform-owned golden остаётся
+  vendored — SDK им не владеет).
+- ✅ Док-дрейф: `docs/contracts/snapshot-format.md` (13 top-level ключей, пример
+  `ops.6`), `/ops/runs/:id/analysis` помечен как mock-only, расхождение
+  error-shape по historical задокументировано осознанно.
 
 ## wfo-extended-fixture — `proposed`
 

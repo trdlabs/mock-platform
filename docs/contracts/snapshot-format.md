@@ -45,7 +45,7 @@ The manifest is a JSON object with exactly these fields (no extra fields — val
 ```
 
 The values above are the ones the current mock accepts; `opsReadContractVersion`
-tracks the vendored SDK (`@trading-platform/sdk/ops-read`) and has moved
+tracks the pinned SDK (`@trdlabs/sdk/ops-read`) and has moved
 `ops.3 → ops.6` since this contract was first written.
 
 The mock performs **exact-match** version checks on startup: any other value —
