@@ -980,8 +980,17 @@ function arg(name: string): string {
   throw new Error(`missing required --${name}`);
 }
 
+function loadTurnoverOrBlock(path: string): Record<string, number> {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, number>;
+  } catch (err) {
+    console.error(`BLOCKER: failed to read/parse turnover file ${path}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+}
+
 function main(): void {
-  const turnover = JSON.parse(readFileSync(arg('turnover'), 'utf8')) as Record<string, number>;
+  const turnover = loadTurnoverOrBlock(arg('turnover'));
   const primary = arg('primary').toUpperCase();
   const count = Number(arg('count'));
   const probeFrom = Number(arg('probe-from'));
@@ -1008,6 +1017,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // scripts/wfo-probe.ts — reads the LOCAL 5-symbol raw snapshot (no VPS), prints the chosen
 // 42-day window, or exits non-zero (blocker) when no window fits the frozen budgets.
 import { pathToFileURL } from 'node:url';
+import type { LoadedSnapshot } from '../src/snapshot/loader.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 import { selectWfoWindow } from './wfo-select.js';
 
@@ -1015,6 +1025,15 @@ function arg(name: string): string {
   const i = process.argv.indexOf(`--${name}`);
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
   throw new Error(`missing required --${name}`);
+}
+
+function loadSnapshotOrBlock(source: string): LoadedSnapshot {
+  try {
+    return loadSnapshot(source);
+  } catch (err) {
+    console.error(`BLOCKER: failed to load snapshot from ${source}: ${(err as Error).message}`);
+    process.exit(2);
+  }
 }
 
 function main(): void {
@@ -1026,9 +1045,7 @@ function main(): void {
   const totalGapBudget = Number(arg('total-gap-budget'));
   const maxConsecutiveGapM = Number(arg('max-consecutive-gap'));
 
-  const rows = (loadSnapshot(source).bundle as unknown as {
-    historical?: { rowsBySymbol?: Record<string, Array<{ minute_ts: number }>> };
-  }).historical?.rowsBySymbol;
+  const rows = loadSnapshotOrBlock(source).bundle.historical?.rowsBySymbol;
   if (!rows) { console.error('BLOCKER: source has no historical.rowsBySymbol'); process.exit(2); }
 
   const win = selectWfoWindow(rows, symbols, probeFrom, probeTo, spanDays, totalGapBudget, maxConsecutiveGapM);

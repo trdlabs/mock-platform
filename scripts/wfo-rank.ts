@@ -13,8 +13,17 @@ function arg(name: string): string {
   throw new Error(`missing required --${name}`);
 }
 
+function loadTurnoverOrBlock(path: string): Record<string, number> {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, number>;
+  } catch (err) {
+    console.error(`BLOCKER: failed to read/parse turnover file ${path}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+}
+
 function main(): void {
-  const turnover = JSON.parse(readFileSync(arg('turnover'), 'utf8')) as Record<string, number>;
+  const turnover = loadTurnoverOrBlock(arg('turnover'));
   const primary = arg('primary').toUpperCase();
   const count = Number(arg('count'));
   const probeFrom = Number(arg('probe-from'));
