@@ -1,7 +1,7 @@
 {
   "note": "rows filtered to the intersection of the 5 source series",
   "rawSourceRef": "data/snapshots/_raw/wfo",
-  "rawSourceBundleSha256": "63a86eef2639f454115f9926f49cefa462a980a2118c016d13924ee1109ac02e",
+  "rawSourceBundleSha256": "568f3d45b75e7b66c557adf3fb276495f2b0bd6655ecd7cff3fff92141c5a17d",
   "window": {
     "fromMs": 1780963200000,
     "toMs": 1784592000000
