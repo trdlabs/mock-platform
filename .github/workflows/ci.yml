@@ -40,11 +40,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The tool imports mock src/ (that is the documented boundary — only its npm DEPS are kept out
+      # of the root lockfile), and src/contract/ops-read reaches the SDK seam through its barrel,
+      # so typechecking it needs the ROOT dependencies present. Locally this is invisible: module
+      # resolution walks up into the repo's own node_modules.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - working-directory: tools/fetch-snapshot
         # --ignore-scripts for the same reason as the root job: pnpm 11 exits non-zero rather than
         # silently skipping a dependency's build scripts, and esbuild's prebuilt binary is enough
-        # for vitest/tsc. Without it this job fails on a clean runner while passing locally, where
-        # node_modules is already built.
+        # for vitest/tsc.
         run: |
           pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
           pnpm typecheck
