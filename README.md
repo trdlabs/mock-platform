@@ -151,10 +151,10 @@ least one minute-capable symbol is served, and coarse-only symbols in it contrib
 Unknown symbols keep yielding a graceful empty page whenever the resource is available.
 
 The ecosystem default fixture (`fixtures/2026-06-22-to-2026-06-28-vps`) carries native 1m data and
-is unaffected. Note that the *code*-default `MOCK_SNAPSHOT_REF` (`fixtures/2026-06-16-synthetic`) is
-bars-only, so starting the mock without an explicit ref now yields `minute_rows_unavailable` on
-`/historical/rows` — that is the correct answer for that snapshot; set `MOCK_SNAPSHOT_REF` to a
-fixture with native 1m when you need rows.
+is unaffected. The *code*-default `MOCK_SNAPSHOT_REF` is now the native-1m T1 fixture
+`fixtures/2026-06-22-to-2026-06-28-vps` (previously the 2024-era bars-only
+`fixtures/2026-06-16-synthetic`), so starting the mock without an explicit ref serves real
+minute rows on `/historical/rows`.
 
 **Golden fixture.** `data/snapshots/fixtures/historical-golden` is a deterministic snapshot covering all
 canonical kinds, generated from the platform `MANIFEST` by `scripts/make-golden-fixture.ts`. It carries two

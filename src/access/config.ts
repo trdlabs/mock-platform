@@ -31,7 +31,7 @@ export function loadMockConfig(env: Record<string, string | undefined>): MockCon
   return {
     port, bind, tokenAllowlist,
     snapshotDir: env.MOCK_SNAPSHOT_DIR ?? './data/snapshots',
-    snapshotRef: env.MOCK_SNAPSHOT_REF ?? 'fixtures/2026-06-16-synthetic',
+    snapshotRef: env.MOCK_SNAPSHOT_REF ?? 'fixtures/2026-06-22-to-2026-06-28-vps',
     replayMode, replaySpeed,
   };
 }
