@@ -124,3 +124,29 @@ describe('checkFixture', () => {
     expect(checkFixture(covC, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
   });
 });
+
+// append to test/scripts/verify-fixtures.test.ts
+import { runFixtureVerification } from '../../scripts/verify_fixtures.js';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+describe('runFixtureVerification', () => {
+  it('returns 0 on the real repo (legacy fixtures warn)', () => {
+    expect(runFixtureVerification('.')).toBe(0);
+  });
+  it('returns 1 for a malformed sidecar', () => {
+    const d = mkdtempSync(join(tmpdir(), 'vf-'));
+    const fx = join(d, 'data/snapshots/wfo/bad');
+    mkdirSync(fx, { recursive: true });
+    writeFileSync(join(fx, 'coverage.json'), JSON.stringify({ schemaVersion: 'fixture-coverage.1' }));
+    expect(runFixtureVerification(d)).toBe(1);
+  });
+  it('returns 1 for a non-JSON sidecar without throwing', () => {
+    const d = mkdtempSync(join(tmpdir(), 'vf-'));
+    const fx = join(d, 'data/snapshots/wfo/bad2');
+    mkdirSync(fx, { recursive: true });
+    writeFileSync(join(fx, 'coverage.json'), '{ not json');
+    expect(runFixtureVerification(d)).toBe(1);
+  });
+});

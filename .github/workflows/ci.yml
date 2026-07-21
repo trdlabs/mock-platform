@@ -28,6 +28,7 @@ jobs:
       # (vendored golden matches its recorded sha256) works fine on a runner; the cross-repo half
       # WARN-skips without a platform checkout, which is its documented behaviour.
       - run: pnpm verify:golden-sync
+      - run: pnpm verify:fixtures
 
   docker:
     runs-on: ubuntu-latest

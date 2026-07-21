@@ -1,4 +1,8 @@
 import { Ajv } from 'ajv';
+import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadSnapshot } from '../src/snapshot/loader.js';
 
 export const MINUTE_MS = 60_000;
 
@@ -118,4 +122,46 @@ export function checkFixture(
   const mcg = maxConsecutiveGap(grid, fromMs, toMs);
   if (mcg > coverage.maxConsecutiveGapMinutes) errs.push(`max consecutive gap ${mcg} > budget ${coverage.maxConsecutiveGapMinutes}`);
   return errs;
+}
+
+const SCAN_ROOTS = ['data/snapshots/fixtures', 'data/snapshots/wfo'];
+
+function fixtureDirs(root: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).map((n) => join(root, n)).filter((p) => statSync(p).isDirectory());
+}
+
+/** Scan the two fixture roots under `baseDir`. Returns a process exit code (0 ok / 1 any FAIL). */
+export function runFixtureVerification(baseDir: string): number {
+  let failed = 0;
+  let enforced = 0;
+  for (const root of SCAN_ROOTS) {
+    for (const dir of fixtureDirs(join(baseDir, root))) {
+      const coveragePath = join(dir, 'coverage.json');
+      if (!existsSync(coveragePath)) { console.log(`WARN  ${dir} — legacy (no declared coverage)`); continue; }
+      enforced++;
+
+      let doc: unknown;
+      try { doc = JSON.parse(readFileSync(coveragePath, 'utf8')); }
+      catch (e) { console.error(`FAIL  ${dir}\n  - coverage.json is not valid JSON: ${(e as Error).message}`); failed++; continue; }
+
+      const schemaErrs = validateCoverageDoc(doc);
+      if (schemaErrs.length) { console.error(`FAIL  ${dir}\n${schemaErrs.map((e) => `  - ${e}`).join('\n')}`); failed++; continue; }
+
+      let rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>> | undefined;
+      try { rowsBySymbol = loadSnapshot(dir).bundle.historical?.rowsBySymbol; }
+      catch (e) { console.error(`FAIL  ${dir}\n  - could not load snapshot: ${(e as Error).message}`); failed++; continue; }
+
+      const errs = checkFixture(doc as CoverageDoc, rowsBySymbol);
+      if (errs.length) { console.error(`FAIL  ${dir}\n${errs.map((e) => `  - ${e}`).join('\n')}`); failed++; }
+      else console.log(`OK    ${dir}`);
+    }
+  }
+  if (failed) { console.error(`verify_fixtures: ${failed} fixture(s) FAILED`); return 1; }
+  console.log(`verify_fixtures: OK (${enforced} enforced, legacy warned)`);
+  return 0;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exit(runFixtureVerification('.'));
 }
