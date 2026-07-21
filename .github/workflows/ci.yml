@@ -30,6 +30,22 @@ jobs:
       - run: pnpm verify:golden-sync
       - run: pnpm verify:fixtures
 
+  fetch-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - working-directory: tools/fetch-snapshot
+        run: |
+          pnpm install --ignore-workspace --frozen-lockfile
+          pnpm typecheck
+          pnpm exec vitest run
+
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -648,7 +648,7 @@ export function minuteRowToCanonicalRow(row: MinuteRow): CanonicalRowV2 {
   };
 }
 
-async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
+export async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
   type AsyncBuffer = { byteLength: number; slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer> };
   const { parquetReadObjects } = await import('hyparquet');
   const { compressors } = await import('hyparquet-compressors');
