@@ -565,7 +565,7 @@ Exports `writeWfoFixture(opts)` — tested end-to-end in a temp dir against a re
 - Produces:
   - `intersectToCommonGrid<R extends { minute_ts: number }>(rowsBySymbol, symbols, fromMs, toMs): { grid: number[]; filtered: Record<string, R[]>; perSymbol: Record<string, { inWindow: number; final: number }> }`
   - `filterBarsToWindow<B extends { tsMs: number }>(bars, fromMs, toMs): Record<string, Record<string, B[]>>`
-  - `writeWfoFixture(opts: { source: string; out: string; symbols: string[]; fromMs: number; toMs: number; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number }): { bundleRef: string; gridSize: number }`
+  - `writeWfoFixture(opts: { source: string; out: string; symbols: string[]; fromMs: number; toMs: number; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number; ranking?: unknown }): { bundleRef: string; gridSize: number }`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -615,7 +615,8 @@ describe('writeWfoFixture (end-to-end)', () => {
     const toMs = firstTs + 10 * M;
 
     const out = join(mkdtempSync(join(tmpdir(), 'wfo-')), 'w42');
-    const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10 });
+    const ranking = { probeWindow: { fromMs: 1, toMs: 2 }, turnoverSha256: 'abc', candidateCount: 9, primary: 'HUSDT', selected: [] };
+    const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, ranking });
 
     // 1. loads through the full gate chain
     const built = loadSnapshot(out).bundle;
@@ -630,8 +631,9 @@ describe('writeWfoFixture (end-to-end)', () => {
     const checks = JSON.parse(readFileSync(join(out, 'checksums.json'), 'utf8'));
     expect(checks[res.bundleRef]).toMatch(/^[0-9a-f]{64}$/);
 
-    // 4. provenance splits VPS absence from probe-surplus and intersection loss
+    // 4. provenance embeds the ranking evidence verbatim and splits attrition
     const prov = JSON.parse(readFileSync(join(out, 'provenance.json'), 'utf8'));
+    expect(prov.ranking).toEqual(ranking);
     const E = (toMs - fromMs) / M;
     for (const s of symbols) {
       const p = prov.perSymbol[s];
@@ -713,10 +715,11 @@ export interface WriteWfoOpts {
   source: string; out: string; symbols: string[];
   fromMs: number; toMs: number;
   totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number;
+  ranking?: unknown; // ranking-provenance object (from wfo-rank) — embedded verbatim into provenance
 }
 
 export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSize: number } {
-  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes } = opts;
+  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking } = opts;
   if (symbols.length !== 5) throw new Error(`expected exactly 5 symbols, got ${symbols.length}`);
 
   const srcManifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
@@ -773,6 +776,8 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
     window: { fromMs, toMs },
     commonGridSize: grid.length,
     rankingTieBreak: 'top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC',
+    // proves WHY these 4 were chosen: turnover-map hash, candidate count, selected+rank+turnover, probe window
+    ...(ranking !== undefined ? { ranking } : {}),
     perSymbol: Object.fromEntries(symbols.map((s) => {
       const raw = rawRows[s]!; const inWin = perSymbol[s]!.inWindow; const fin = perSymbol[s]!.final;
       const E = (toMs - fromMs) / 60_000;
@@ -799,8 +804,13 @@ function arg(name: string): string {
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
   throw new Error(`missing required --${name}`);
 }
+function argMaybe(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : undefined;
+}
 
 function main(): void {
+  const rankingPath = argMaybe('ranking');
   const res = writeWfoFixture({
     source: arg('source'),
     out: arg('out'),
@@ -809,6 +819,7 @@ function main(): void {
     toMs: Number(arg('to')),
     totalGapBudgetMinutes: Number(arg('total-gap-budget')),
     maxConsecutiveGapMinutes: Number(arg('max-consecutive-gap')),
+    ...(rankingPath ? { ranking: JSON.parse(readFileSync(rankingPath, 'utf8')) } : {}),
   });
   console.log(`wfo fixture written: grid ${res.gridSize} min, bundleRef ${res.bundleRef}`);
 }
@@ -846,6 +857,7 @@ Testable pure functions so ranking and anchor selection are executable, not pros
 - Consumes: `intersectToCommonGrid` (`./make-wfo-fixture.js`), `totalGap` / `maxConsecutiveGap` (`./verify_fixtures.js`).
 - Produces:
   - `rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary: string, count: number): string[]`
+  - `canonicalTurnover(turnoverBySymbol: Record<string, number>): string` (keys sorted — a stable hash input)
   - `selectWfoWindow(rowsBySymbol, symbols: string[], probeFrom: number, probeTo: number, spanDays: number, totalGapBudgetMinutes: number, maxConsecutiveGapMinutes: number): { fromMs: number; toMs: number } | null`
 
 - [ ] **Step 1: Write the failing tests**
@@ -853,7 +865,7 @@ Testable pure functions so ranking and anchor selection are executable, not pros
 ```ts
 // test/scripts/wfo-select.test.ts
 import { describe, it, expect } from 'vitest';
-import { rankWfoSymbols, selectWfoWindow } from '../../scripts/wfo-select.js';
+import { rankWfoSymbols, canonicalTurnover, selectWfoWindow } from '../../scripts/wfo-select.js';
 
 const M = 60_000;
 const DAY = 86_400_000;
@@ -866,6 +878,13 @@ describe('rankWfoSymbols', () => {
   });
   it('includes the primary even if it has no turnover entry', () => {
     expect(rankWfoSymbols({ ZUSDT: 9, AUSDT: 8 }, 'HUSDT', 1)).toEqual(['HUSDT', 'ZUSDT']);
+  });
+});
+
+describe('canonicalTurnover', () => {
+  it('serialises with keys sorted, so the hash is order-independent', () => {
+    expect(canonicalTurnover({ B: 2, A: 1 })).toBe(canonicalTurnover({ A: 1, B: 2 }));
+    expect(canonicalTurnover({ B: 2, A: 1 })).toBe('{"A":1,"B":2}');
   });
 });
 
@@ -910,6 +929,13 @@ export function rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary
   return [primary, ...others];
 }
 
+/** Deterministic JSON for a turnover map — keys sorted ascending — so its sha256 is a stable,
+ *  order-independent fingerprint of the ranking input. */
+export function canonicalTurnover(turnoverBySymbol: Record<string, number>): string {
+  const sorted = Object.keys(turnoverBySymbol).sort();
+  return JSON.stringify(Object.fromEntries(sorted.map((k) => [k, turnoverBySymbol[k]])));
+}
+
 /** Slide a `spanDays` half-open window's anchor from the freshest day boundary backwards;
  *  return the first window whose intersected grid meets both budgets, or null. */
 export function selectWfoWindow(
@@ -934,11 +960,14 @@ export function selectWfoWindow(
 ```
 
 ```ts
-// scripts/wfo-rank.ts — reads a {SYMBOL: turnover} JSON map (from tools/fetch-snapshot/wfo-turnover.ts)
-// and prints the ranked 5 symbols, or exits non-zero (blocker) if it cannot produce enough.
-import { readFileSync } from 'node:fs';
+// scripts/wfo-rank.ts — reads a {SYMBOL: turnover} JSON map (from tools/fetch-snapshot/wfo-turnover.ts),
+// ranks HUSDT + top-4, writes a ranking-provenance file proving WHY those 4 were chosen (turnover
+// hash, candidate count, selected symbols with rank + turnover, probe window), and prints the 5
+// symbols as CSV. Exits non-zero (blocker) if it cannot produce enough.
+import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { rankWfoSymbols } from './wfo-select.js';
+import { sha256Hex } from '../src/snapshot/checksums.js';
+import { rankWfoSymbols, canonicalTurnover } from './wfo-select.js';
 
 function arg(name: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -950,8 +979,20 @@ function main(): void {
   const turnover = JSON.parse(readFileSync(arg('turnover'), 'utf8')) as Record<string, number>;
   const primary = arg('primary').toUpperCase();
   const count = Number(arg('count'));
+  const probeFrom = Number(arg('probe-from'));
+  const probeTo = Number(arg('probe-to'));
+  const outRanking = arg('out-ranking');
+
   const symbols = rankWfoSymbols(turnover, primary, count);
   if (symbols.length !== count + 1) { console.error(`BLOCKER: ranked ${symbols.length} symbols, need ${count + 1}`); process.exit(2); }
+
+  writeFileSync(outRanking, JSON.stringify({
+    probeWindow: { fromMs: probeFrom, toMs: probeTo },
+    turnoverSha256: sha256Hex(canonicalTurnover(turnover)),
+    candidateCount: Object.keys(turnover).length,
+    primary,
+    selected: symbols.map((s, i) => ({ symbol: s, rank: i, turnover: turnover[s] ?? 0 })),
+  }, null, 2));
   console.log(symbols.join(','));
 }
 
@@ -1047,6 +1088,16 @@ describe('aggregateTurnover', () => {
     ];
     expect(aggregateTurnover(rows, 60_000, 180_000)).toEqual({ A: 7 });
   });
+  it('throws on a non-finite value', () => {
+    expect(() => aggregateTurnover([{ symbol: 'A', close: NaN, volume: 1, minute_ts: 60_000 }], 0, 120_000)).toThrow(/non-finite/);
+  });
+  it('throws on a duplicate (symbol, minute_ts) instead of double-counting', () => {
+    const dup = [
+      { symbol: 'A', close: 1, volume: 1, minute_ts: 60_000 },
+      { symbol: 'a', close: 2, volume: 2, minute_ts: 60_000 }, // same symbol+minute (upper-cased)
+    ];
+    expect(() => aggregateTurnover(dup, 0, 120_000)).toThrow(/duplicate/);
+  });
 });
 
 describe('assembleRawBundle', () => {
@@ -1059,7 +1110,8 @@ describe('assembleRawBundle', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --dir tools/fetch-snapshot install --no-frozen-lockfile` (once, to get the tool's `vitest`), then
+Run (once, to get the tool's `vitest`, strictly isolated + reproducible against its own committed lockfile):
+`pnpm --dir tools/fetch-snapshot install --ignore-workspace --frozen-lockfile`, then
 `pnpm --dir tools/fetch-snapshot exec vitest run wfo-tools.test.ts`
 Expected: FAIL — modules not found.
 
@@ -1077,12 +1129,22 @@ import { pathToFileURL } from 'node:url';
 
 export interface TurnoverRow { symbol: string; close: number; volume: number; minute_ts: number }
 
-/** turnover = Σ close·volume per symbol within [fromMs, toMs). Pure; testable without parquet. */
+/** turnover = Σ close·volume per symbol within [fromMs, toMs). Pure; testable without parquet.
+ *  Fail-closed: non-finite close/volume throws; a repeated (symbol, minute_ts) — e.g. the same
+ *  minute present in both schema_version=1 and =2 partitions — throws rather than double-counting.
+ *  Deterministic: the caller must feed rows in a stable (sorted) file order. */
 export function aggregateTurnover(rows: Iterable<TurnoverRow>, fromMs: number, toMs: number): Record<string, number> {
   const out: Record<string, number> = {};
+  const seen = new Set<string>();
   for (const r of rows) {
     if (r.minute_ts < fromMs || r.minute_ts >= toMs) continue;
     const s = r.symbol.trim().toUpperCase();
+    if (!Number.isFinite(r.close) || !Number.isFinite(r.volume)) {
+      throw new Error(`non-finite close/volume for ${s} @ ${r.minute_ts}`);
+    }
+    const key = `${s}|${r.minute_ts}`;
+    if (seen.has(key)) throw new Error(`duplicate (symbol, minute_ts) ${key} across parquet partitions — refusing to double-count`);
+    seen.add(key);
     out[s] = (out[s] ?? 0) + r.close * r.volume;
   }
   return out;
@@ -1106,26 +1168,27 @@ async function main(): Promise<void> {
     asyncBufferFromFile: (p: string) => Promise<{ byteLength: number; slice(s: number, e?: number): ArrayBuffer | Promise<ArrayBuffer> }>;
   };
 
-  function* readAll(rows: Record<string, unknown>[]): Generator<TurnoverRow> {
-    for (const r of rows) yield { symbol: String(r['symbol']), close: Number(r['close']), volume: Number(r['volume']), minute_ts: Number(r['minute_ts']) };
-  }
-
-  const turnover: Record<string, number> = {};
+  // Collect rows in a STABLE order (sorted schema_version → date → part-file), then aggregate in a
+  // single pass so the duplicate check spans files and schema versions.
+  const all: TurnoverRow[] = [];
   for (const sv of [1, 2] as const) {
     const svDir = join(localRoot, `schema_version=${sv}`);
     if (!existsSync(svDir)) continue;
-    for (const entry of readdirSync(svDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith('date=')) continue;
-      const partDir = join(svDir, entry.name);
-      for (const f of await readdir(partDir)) {
+    const dateDirs = readdirSync(svDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('date='))
+      .map((e) => e.name)
+      .sort();
+    for (const date of dateDirs) {
+      const partDir = join(svDir, date);
+      for (const f of (await readdir(partDir)).sort()) {
         if (!f.startsWith('part-') || !f.endsWith('.parquet')) continue;
         const file = await asyncBufferFromFile(join(partDir, f));
         const rows = (await parquetReadObjects({ file, columns: ['minute_ts', 'symbol', 'close', 'volume'], compressors })) as Record<string, unknown>[];
-        for (const [s, v] of Object.entries(aggregateTurnover(readAll(rows), fromMs, toMs))) turnover[s] = (turnover[s] ?? 0) + v;
+        for (const r of rows) all.push({ symbol: String(r['symbol']), close: Number(r['close']), volume: Number(r['volume']), minute_ts: Number(r['minute_ts']) });
       }
     }
   }
-  process.stdout.write(JSON.stringify(turnover));
+  process.stdout.write(JSON.stringify(aggregateTurnover(all, fromMs, toMs)));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
@@ -1215,7 +1278,7 @@ In `.github/workflows/ci.yml`, add a job (parallel to `checks`) so the tool is t
           node-version: 22
       - working-directory: tools/fetch-snapshot
         run: |
-          pnpm install --no-frozen-lockfile
+          pnpm install --ignore-workspace --frozen-lockfile
           pnpm typecheck
           pnpm exec vitest run
 ```
@@ -1248,15 +1311,20 @@ Add the line `data/snapshots/_raw/` to `.gitignore` **with your editor** (not `e
 git add .gitignore && git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
 ```
 
-- [ ] **Step 2: Unique temp paths + probe window**
+- [ ] **Step 2: One temp root (trap-cleaned) + probe window**
+
+Run Steps 2–7 in a **single shell** so the `trap` covers an early exit. One `mktemp -d` holds the parquet cache and the two JSON files, so cleanup is a single `rm -rf` of a directory (never a recursive delete of a file), and nothing leaks if a ⛔ blocker aborts mid-run.
 
 ```bash
-export PARQUET_CACHE="$(mktemp -d)"   # unique per session — safe under parallel sessions
-export TURNOVER="$(mktemp)"
+export TEMP_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TEMP_ROOT"' EXIT
+export PARQUET_CACHE="$TEMP_ROOT/parquet"   # fetch-snapshot mkdir -p's this
+export TURNOVER="$TEMP_ROOT/turnover.json"
+export RANKING="$TEMP_ROOT/ranking.json"
 # probeTo = start_of(latest_complete_UTC_day + 1) ms; probeFrom = probeTo − 50·86_400_000
 ```
 
-Both temp paths are removed in Step 10. Record `probeFrom` / `probeTo` (ms).
+Record `probeFrom` / `probeTo` (ms).
 
 - [ ] **Step 3: One read-only VPS visit (ops + rsync of all parquet)**
 
@@ -1276,11 +1344,13 @@ If rsync brings no parquet or ops fails → ⛔ blocker.
 
 ```bash
 pnpm tsx tools/fetch-snapshot/wfo-turnover.ts -- --parquet-local "$PARQUET_CACHE" --from <probeFrom ms> --to <probeTo ms> > "$TURNOVER"
-SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- --turnover "$TURNOVER" --primary HUSDT --count 4)
-echo "$SYMBOLS"   # e.g. HUSDT,AUSDT,BUSDT,CUSDT,DUSDT
+SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- \
+  --turnover "$TURNOVER" --primary HUSDT --count 4 \
+  --probe-from <probeFrom ms> --probe-to <probeTo ms> --out-ranking "$RANKING")
+echo "$SYMBOLS"   # e.g. HUSDT,AUSDT,BUSDT,CUSDT,DUSDT ; $RANKING now holds the ranking-provenance
 ```
 
-Non-zero exit / empty turnover → ⛔ blocker (no proxy fallback).
+Non-zero exit / empty turnover → ⛔ blocker (no proxy fallback). A `duplicate (symbol, minute_ts)` or `non-finite` error from `wfo-turnover` is also a ⛔ blocker — investigate the parquet, do not work around it.
 
 - [ ] **Step 5: Build the 5-symbol raw snapshot locally (no second visit)**
 
@@ -1309,7 +1379,8 @@ pnpm tsx scripts/make-wfo-fixture.ts -- \
   --source data/snapshots/_raw/wfo \
   --out    data/snapshots/wfo/<from-date>-to-<to-date>-vps-wfo42d \
   --symbols "$SYMBOLS" --from <from ms> --to <to ms> \
-  --total-gap-budget 6480 --max-consecutive-gap 1440
+  --total-gap-budget 6480 --max-consecutive-gap 1440 \
+  --ranking "$RANKING"
 ```
 
 Run: `pnpm verify:fixtures`
@@ -1365,8 +1436,13 @@ Expected: `WFO-ABSENT` and `SIZE-OK`. Either failing means the Dockerfile COPY s
 ```bash
 git add data/snapshots/wfo test/snapshot/wfo-nested-ref.test.ts
 git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nested-ref smoke"
-rm -rf "$PARQUET_CACHE" "$TURNOVER"     # bounded cleanup: only what Step 2 created
+# (TEMP_ROOT was already removed by the Step 2 trap when the Steps 2–7 shell exited)
 ```
+
+> **Task 8 is a required merge gate, not optional.** It is the only place the parquet
+> read/write shells run against real data; the branch must not merge until Task 8 has
+> produced, validated (`verify:fixtures` enforce), and committed the T2 fixture with a
+> green `check:ci`.
 
 ---
 
@@ -1374,6 +1450,6 @@ rm -rf "$PARQUET_CACHE" "$TURNOVER"     # bounded cleanup: only what Step 2 crea
 
 - **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
 - **Honest boundary:** the `tools/fetch-snapshot` package freely imports mock `src/` (like `fetch-snapshot.ts` already does, including `src/contract`); the only isolation is that its npm deps stay out of the root lockfile.
-- **Parquet coverage note:** the tools' pure cores (`aggregateTurnover`, `assembleRawBundle`) are unit-tested; the parquet read/write shells are not (repo convention — `fetch-snapshot`'s reader is likewise untested). A real-parquet E2E would need `hyparquet-writer` added to the tool's devDeps to generate a fixture — a deliberate follow-up, not blocking.
+- **Parquet coverage:** the tools' pure cores (`aggregateTurnover` — incl. fail-closed on non-finite values and cross-partition duplicates — and `assembleRawBundle`) are unit-tested; the thin parquet read/write shells are not (repo convention — `fetch-snapshot`'s reader is likewise untested). Their end-to-end coverage against **real parquet** is **Task 8, which is a required merge gate** (not an optional follow-up): the branch does not merge until Task 8 has run the shells on live data and committed a validated T2.
 - **Delivery order:** Tasks 1-3 (validator) precede Task 8 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-7 are pure code, buildable/reviewable without VPS; only Task 8 needs credentials.
 - **Execution split:** Tasks 1-7 are TDD, no credentials needed. Task 8 is inline with credentials and stop-conditions.
