@@ -651,6 +651,23 @@ export function minuteRowToCanonicalRow(row: MinuteRow): CanonicalRowV2 {
   };
 }
 
+/** Read the cached parquet tree into per-symbol minute rows.
+ *
+ *  **Ordering is part of the contract, not an accident of the filesystem.** The same minute can be
+ *  present more than once — the schema_version=1→2 migration and a platform update that paused and
+ *  back-filled writes both produce re-writes — and downstream `dedupeRowsBySymbol` resolves those
+ *  last-writer-wins. That rule is only reproducible if "last" is defined, so part-files are visited
+ *  in a fully sorted order and the precedence is:
+ *
+ *    schema_version ascending, then date= ascending, then part-file name ascending.
+ *
+ *  So a schema_version=2 row beats a schema_version=1 row for the same minute, and within one
+ *  partition the lexicographically last part-file wins. `readdir` returns entries in filesystem
+ *  order, which differs between machines — hence the explicit sorts.
+ *
+ *  Each row is also checked to fall inside the `date=` partition that holds it. That is what lets
+ *  consumers scope a duplicate search to a single day; a row that escaped its partition would make
+ *  a per-day dedup silently incomplete, so it is rejected rather than tolerated. */
 export async function readParquetDir(localRoot: string, symbols: string[], tsFrom: number, tsTo: number): Promise<HistoricalBundle> {
   type AsyncBuffer = { byteLength: number; slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer> };
   const { parquetReadObjects } = await import('hyparquet');
@@ -658,23 +675,26 @@ export async function readParquetDir(localRoot: string, symbols: string[], tsFro
   const { asyncBufferFromFile } = (await import('hyparquet/src/node.js')) as { asyncBufferFromFile: (path: string) => Promise<AsyncBuffer> };
 
   const symSet = new Set(symbols.map((s) => s.toUpperCase()));
-  const partFiles: Array<{ path: string; sv: 1 | 2 }> = [];
+  const partFiles: Array<{ path: string; sv: 1 | 2; dayStart: number }> = [];
 
-  // Обходим schema_version=1 и schema_version=2
+  // schema_version ascending → date= ascending → part-file ascending. Every level is sorted so the
+  // last-writer-wins precedence documented above is reproducible on any machine.
   for (const sv of [1, 2] as const) {
     const svDir = join(localRoot, `schema_version=${sv}`);
     if (!existsSync(svDir)) continue;
-    const dateDirs = await fsp.readdir(svDir, { withFileTypes: true });
-    for (const entry of dateDirs) {
-      if (!entry.isDirectory() || !entry.name.startsWith('date=')) continue;
-      const dateStr = entry.name.slice(5); // YYYY-MM-DD
+    const dateDirs = (await fsp.readdir(svDir, { withFileTypes: true }))
+      .filter((e) => e.isDirectory() && e.name.startsWith('date='))
+      .map((e) => e.name)
+      .sort();
+    for (const name of dateDirs) {
+      const dateStr = name.slice(5); // YYYY-MM-DD
       const dMs = dateToMs(dateStr);
       if (dMs + 86_400_000 < tsFrom || dMs > tsTo) continue;
-      const partDir = join(svDir, entry.name);
+      const partDir = join(svDir, name);
       const files = await fsp.readdir(partDir);
       for (const f of files.sort()) {
         if (f.startsWith('part-') && f.endsWith('.parquet')) {
-          partFiles.push({ path: join(partDir, f), sv });
+          partFiles.push({ path: join(partDir, f), sv, dayStart: dMs });
         }
       }
     }
@@ -685,7 +705,7 @@ export async function readParquetDir(localRoot: string, symbols: string[], tsFro
 
   const bySymbol: Record<string, MinuteRow[]> = {};
 
-  for (const { path, sv } of partFiles) {
+  for (const { path, sv, dayStart } of partFiles) {
     const columns = sv === 2
       ? ['minute_ts', 'symbol', 'open', 'high', 'low', 'close', 'volume',
           'oi_total_usd', 'funding_rate', 'liq_long_usd', 'liq_short_usd',
@@ -698,6 +718,15 @@ export async function readParquetDir(localRoot: string, symbols: string[], tsFro
 
     for (const r of rows) {
       const ts = typeof r['minute_ts'] === 'bigint' ? Number(r['minute_ts']) : Number(r['minute_ts']);
+      // Checked BEFORE the window filter, so an escaped row cannot slip past by also being out of
+      // range. A row outside its own date= partition breaks the assumption that all versions of a
+      // minute sit together, which is what makes a per-day duplicate scope complete.
+      if (ts < dayStart || ts >= dayStart + 86_400_000) {
+        throw new Error(
+          `${path}: minute_ts ${ts} falls outside its date= partition [${dayStart}, ${dayStart + 86_400_000}) — ` +
+            `duplicate resolution assumes every version of a minute lives under that minute's own date`,
+        );
+      }
       if (ts < tsFrom || ts >= tsTo) continue;
       const sym = String(r['symbol']).trim().toUpperCase();
       if (!symSet.has(sym)) continue;

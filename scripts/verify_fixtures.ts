@@ -83,14 +83,97 @@ export function maxConsecutiveGap(grid: number[], fromMs: number, toMs: number):
   return Math.max(max, trailing);
 }
 
-/** Declared (coverage) vs actual (rowsBySymbol). Returns [] when the fixture passes.
+const TF_MS: Readonly<Record<string, number>> = {
+  '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
+};
+
+/** The derived surfaces of a historical block — everything that is NOT `rowsBySymbol`. */
+export interface HistoricalBlock {
+  rowsBySymbol?: Record<string, ReadonlyArray<{ minute_ts: number; volume?: number }>>;
+  barsBySymbolAndTimeframe?: Record<string, Record<string, ReadonlyArray<{ tsMs: number; volume?: number }>>>;
+  fundingBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
+  openInterestBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
+  liquidationsBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
+}
+
+/** The derived surfaces must agree with the rows the fixture ships, and must not reach outside the
+ *  declared window. Both properties were violated by a real committed fixture:
+ *
+ *  - funding/open-interest/liquidations were carried across a symbol filter with no window clip, so
+ *    a 42-day fixture shipped 54,630 open-interest entries and 18,119 liquidations from before its
+ *    own start;
+ *  - bars came from an aggregate computed BEFORE duplicate rows were collapsed and before the grid
+ *    intersection, so their volume double-counted re-written minutes and they retained buckets whose
+ *    minutes `rowsBySymbol` no longer had.
+ *
+ *  Checking only `rowsBySymbol` cannot see either, which is why this exists. */
+export function checkDerivedSurfaces(coverage: CoverageDoc, historical: HistoricalBlock): string[] {
+  const { fromMs, toMs } = coverage.period;
+  const declared = new Set(coverage.symbols);
+  const errs: string[] = [];
+
+  const series: ReadonlyArray<readonly [string, Record<string, ReadonlyArray<{ tsMs: number }>> | undefined]> = [
+    ['fundingBySymbol', historical.fundingBySymbol],
+    ['openInterestBySymbol', historical.openInterestBySymbol],
+    ['liquidationsBySymbol', historical.liquidationsBySymbol],
+  ];
+  for (const [name, bySymbol] of series) {
+    for (const [symbol, entries] of Object.entries(bySymbol ?? {})) {
+      if (!declared.has(symbol)) {
+        errs.push(`${name}: undeclared symbol ${symbol}`);
+        continue;
+      }
+      const outside = entries.filter((e) => e.tsMs < fromMs || e.tsMs >= toMs);
+      if (outside.length) {
+        const first = Math.min(...outside.map((e) => e.tsMs));
+        errs.push(`${name}[${symbol}]: ${outside.length} entr(ies) outside window [${fromMs}, ${toMs}), earliest ${first}`);
+      }
+    }
+  }
+
+  const rows = historical.rowsBySymbol ?? {};
+  for (const [symbol, tfs] of Object.entries(historical.barsBySymbolAndTimeframe ?? {})) {
+    if (!declared.has(symbol)) {
+      errs.push(`barsBySymbolAndTimeframe: undeclared symbol ${symbol}`);
+      continue;
+    }
+    const shipped = rows[symbol] ?? [];
+    for (const [tf, bars] of Object.entries(tfs)) {
+      const tfMs = TF_MS[tf];
+      if (tfMs === undefined) { errs.push(`barsBySymbolAndTimeframe[${symbol}]: unknown timeframe ${tf}`); continue; }
+      if (bars.length && shipped.some((r) => !Number.isFinite(r.volume))) {
+        errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: rows carry no numeric volume, bars cannot be verified`);
+        continue;
+      }
+      const expected = new Map<number, number>();
+      for (const r of shipped) {
+        const b = Math.floor(r.minute_ts / tfMs) * tfMs;
+        expected.set(b, (expected.get(b) ?? 0) + (r.volume as number));
+      }
+      for (const bar of bars) {
+        const want = expected.get(bar.tsMs);
+        if (want === undefined) {
+          errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar ${bar.tsMs} has no shipped rows in its bucket`);
+          continue;
+        }
+        if (!Number.isFinite(bar.volume) || Math.abs((bar.volume as number) - want) > 1e-6) {
+          errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar ${bar.tsMs} volume ${bar.volume} != row sum ${want}`);
+        }
+      }
+      const missing = [...expected.keys()].filter((b) => !bars.some((x) => x.tsMs === b));
+      if (missing.length) {
+        errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: ${missing.length} bucket(s) with shipped rows have no bar`);
+      }
+    }
+  }
+  return errs;
+}
+
+/** Declared (coverage) vs actual (the whole historical block). Returns [] when the fixture passes.
  *  Symbol-set equality is exact over ALL keys (an extra empty key fails), then each declared
  *  symbol is checked non-empty — so `{ X: [] }` can never slip through. */
-export function checkFixture(
-  coverage: CoverageDoc,
-  rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>> | undefined,
-): string[] {
-  const rows = rowsBySymbol ?? {};
+export function checkFixture(coverage: CoverageDoc, historical: HistoricalBlock | undefined): string[] {
+  const rows = historical?.rowsBySymbol ?? {};
   const { fromMs, toMs } = coverage.period;
 
   const keys = Object.keys(rows).sort();
@@ -121,6 +204,9 @@ export function checkFixture(
   if (tg > coverage.totalGapBudgetMinutes) errs.push(`total gap ${tg} > budget ${coverage.totalGapBudgetMinutes}`);
   const mcg = maxConsecutiveGap(grid, fromMs, toMs);
   if (mcg > coverage.maxConsecutiveGapMinutes) errs.push(`max consecutive gap ${mcg} > budget ${coverage.maxConsecutiveGapMinutes}`);
+
+  // The rows are sound; now hold the surfaces derived from them to the same window and the same data.
+  errs.push(...checkDerivedSurfaces(coverage, historical ?? {}));
   return errs;
 }
 
@@ -163,11 +249,11 @@ export function runFixtureVerification(baseDir: string): number {
       const schemaErrs = validateCoverageDoc(doc);
       if (schemaErrs.length) { console.error(`FAIL  ${dir}\n${schemaErrs.map((e) => `  - ${e}`).join('\n')}`); failed++; continue; }
 
-      let rowsBySymbol: Record<string, ReadonlyArray<{ minute_ts: number }>> | undefined;
-      try { rowsBySymbol = loadSnapshot(dir).bundle.historical?.rowsBySymbol; }
+      let historical: HistoricalBlock | undefined;
+      try { historical = loadSnapshot(dir).bundle.historical as HistoricalBlock | undefined; }
       catch (e) { console.error(`FAIL  ${dir}\n  - could not load snapshot: ${(e as Error).message}`); failed++; continue; }
 
-      const errs = checkFixture(doc as CoverageDoc, rowsBySymbol);
+      const errs = checkFixture(doc as CoverageDoc, historical);
       if (errs.length) { console.error(`FAIL  ${dir}\n${errs.map((e) => `  - ${e}`).join('\n')}`); failed++; }
       else console.log(`OK    ${dir}`);
     }

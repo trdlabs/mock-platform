@@ -65,64 +65,127 @@ describe('gap math', () => {
 });
 
 describe('checkFixture', () => {
+  // These cases exercise the row-level rules, so they pass rows alone; checkFixture now takes the
+  // whole historical block.
+  const chk = (c: typeof cov, rows: Record<string, Array<{ minute_ts: number }>> | undefined) =>
+    checkFixture(c, rows === undefined ? undefined : { rowsBySymbol: rows });
   it('passes a full unified grid within budget', () => {
-    expect(checkFixture(cov, full())).toEqual([]);
+    expect(chk(cov, full())).toEqual([]);
   });
   it('fails a symbol-set mismatch (missing key)', () => {
     const r = full(); delete r.E;
-    expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
   });
   it('fails an extra empty key (must NOT be silently filtered)', () => {
     const r = { ...full(), X: [] as { minute_ts: number }[] };
-    expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
   });
   it('fails an empty declared symbol', () => {
     const r = full(); r.E = [];
-    expect(checkFixture(cov, r).some((e) => e.includes('empty rows'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('empty rows'))).toBe(true);
   });
   it('fails bars-only (no rows at all)', () => {
-    expect(checkFixture(cov, undefined).some((e) => e.includes('symbols mismatch'))).toBe(true);
+    expect(chk(cov, undefined).some((e) => e.includes('symbols mismatch'))).toBe(true);
   });
   it('fails a duplicate minute_ts', () => {
     const r = full(); r.A = [...r.A!, { minute_ts: from }];
-    expect(checkFixture(cov, r).some((e) => e.includes('duplicate'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('duplicate'))).toBe(true);
   });
   it('fails a misaligned minute_ts', () => {
     const r = full(); r.A = [{ minute_ts: from + 30_000 }, ...r.A!.slice(1)];
-    expect(checkFixture(cov, r).some((e) => e.includes('not minute-aligned'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('not minute-aligned'))).toBe(true);
   });
   it('fails non-strictly-increasing rows', () => {
     const r = full(); r.A = [r.A![1]!, r.A![0]!, ...r.A!.slice(2)];
-    expect(checkFixture(cov, r).some((e) => e.includes('strictly increasing'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('strictly increasing'))).toBe(true);
   });
   it('fails non-identical grids', () => {
     const r = full(); r.B = r.B!.slice(0, -1);
-    expect(checkFixture(cov, r).some((e) => e.includes('grid mismatch'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('grid mismatch'))).toBe(true);
   });
   it('fails a row below fromMs', () => {
     const r = full();
     for (const s of cov.symbols) r[s] = [{ minute_ts: from - M }, ...r[s]!];
-    expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('outside window'))).toBe(true);
   });
   it('fails a row at exactly toMs (half-open upper bound)', () => {
     const r = full();
     for (const s of cov.symbols) r[s] = [...r[s]!, { minute_ts: to }];
-    expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
+    expect(chk(cov, r).some((e) => e.includes('outside window'))).toBe(true);
   });
   it('total-gap boundary: == budget passes, +1 fails (consecutive budget relaxed)', () => {
     const g = gridArr();
     // drop the last N minutes → a trailing run of N; relax the consecutive budget so only total-gap gates
     const covT = { ...cov, maxConsecutiveGapMinutes: 10 };
     const keep = (n: number) => Object.fromEntries(cov.symbols.map((s) => [s, g.slice(0, g.length - n).map((t) => ({ minute_ts: t }))]));
-    expect(checkFixture(covT, keep(2))).toEqual([]);                                  // total gap == 2
-    expect(checkFixture(covT, keep(3)).some((e) => e.includes('total gap'))).toBe(true); // 3 > 2
+    expect(chk(covT, keep(2))).toEqual([]);                                  // total gap == 2
+    expect(chk(covT, keep(3)).some((e) => e.includes('total gap'))).toBe(true); // 3 > 2
   });
   it('consecutive-gap boundary: == budget passes, +1 fails (total budget relaxed)', () => {
     const g = gridArr();
     const covC = { ...cov, totalGapBudgetMinutes: 10 }; // only consecutive gates
     const drop = (idx: number[]) => Object.fromEntries(cov.symbols.map((s) => [s, g.filter((_, i) => !idx.includes(i)).map((t) => ({ minute_ts: t }))]));
-    expect(checkFixture(covC, drop([3]))).toEqual([]);                                 // one-minute hole (== 1)
-    expect(checkFixture(covC, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
+    expect(chk(covC, drop([3]))).toEqual([]);                                 // one-minute hole (== 1)
+    expect(chk(covC, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
+  });
+});
+
+describe('checkDerivedSurfaces (the whole historical block, not just rows)', () => {
+  const rowsWithVolume = () =>
+    Object.fromEntries(cov.symbols.map((s) => [s, gridArr().map((t) => ({ minute_ts: t, volume: 2 }))]));
+  /** Bars that genuinely agree with the rows above: one bucket, volume = 2 per minute. */
+  const goodBars = () =>
+    Object.fromEntries(cov.symbols.map((s) => [s, { '1h': [{ tsMs: Math.floor(from / 3_600_000) * 3_600_000, volume: 2 * gridArr().length }] }]));
+
+  it('passes when every derived surface agrees with the shipped rows', () => {
+    expect(checkFixture(cov, {
+      rowsBySymbol: rowsWithVolume(),
+      barsBySymbolAndTimeframe: goodBars(),
+      openInterestBySymbol: Object.fromEntries(cov.symbols.map((s) => [s, [{ tsMs: from }]])),
+    })).toEqual([]);
+  });
+
+  it('FAILS a derived series reaching outside the declared window', () => {
+    // The exact defect a real fixture shipped: 54,630 open-interest entries before its own start.
+    const errs = checkFixture(cov, {
+      rowsBySymbol: rowsWithVolume(),
+      barsBySymbolAndTimeframe: goodBars(),
+      openInterestBySymbol: Object.fromEntries(cov.symbols.map((s) => [s, [{ tsMs: from - M }, { tsMs: from }]])),
+    });
+    expect(errs.some((e) => e.includes('openInterestBySymbol') && e.includes('outside window'))).toBe(true);
+  });
+
+  it('FAILS a 1h bar whose volume does not equal the sum of the rows shipped for it', () => {
+    // The other real defect: bars aggregated before duplicates were collapsed, so a re-written
+    // minute was counted twice into its bucket.
+    const bars = goodBars();
+    bars.A!['1h']![0]!.volume += 2; // one extra minute's worth, as a double-count would produce
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[A][1h]') && e.includes('!= row sum'))).toBe(true);
+  });
+
+  it('FAILS a bar bucket that has no shipped rows left, and a bucket with rows but no bar', () => {
+    const orphan = checkFixture(cov, {
+      rowsBySymbol: rowsWithVolume(),
+      // the next hour holds none of the shipped minutes (rows span minutes 1..10)
+      barsBySymbolAndTimeframe: Object.fromEntries(cov.symbols.map((s) => [s, { '1h': [...goodBars()[s]!['1h']!, { tsMs: 3_600_000, volume: 1 }] }])),
+    });
+    expect(orphan.some((e) => e.includes('no shipped rows in its bucket'))).toBe(true);
+
+    const missing = checkFixture(cov, {
+      rowsBySymbol: rowsWithVolume(),
+      barsBySymbolAndTimeframe: Object.fromEntries(cov.symbols.map((s) => [s, { '1h': [] }])),
+    });
+    expect(missing.some((e) => e.includes('have no bar'))).toBe(true);
+  });
+
+  it('FAILS an undeclared symbol smuggled in on a derived surface', () => {
+    const errs = checkFixture(cov, {
+      rowsBySymbol: rowsWithVolume(),
+      barsBySymbolAndTimeframe: goodBars(),
+      fundingBySymbol: { ZZZ: [{ tsMs: from }] },
+    });
+    expect(errs.some((e) => e.includes('fundingBySymbol') && e.includes('undeclared symbol ZZZ'))).toBe(true);
   });
 });
 
