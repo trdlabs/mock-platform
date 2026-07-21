@@ -34,3 +34,93 @@ describe('validateCoverageDoc', () => {
     expect(validateCoverageDoc({ ...ok, period: { fromMs: 120_000, toMs: 120_000 } }).length).toBeGreaterThan(0);
   });
 });
+
+// append to test/scripts/verify-fixtures.test.ts
+import { checkFixture, totalGap, maxConsecutiveGap } from '../../scripts/verify_fixtures.js';
+
+const M = 60_000;
+const from = M;                 // 60_000
+const to = M + 10 * M;          // 10 grid slots: minutes 1..10
+const cov = {
+  schemaVersion: 'fixture-coverage.1' as const,
+  period: { fromMs: from, toMs: to },
+  symbols: ['A', 'B', 'C', 'D', 'E'],
+  totalGapBudgetMinutes: 2,
+  maxConsecutiveGapMinutes: 1,
+};
+const gridArr = (): number[] => Array.from({ length: (to - from) / M }, (_, i) => from + i * M);
+// full unified grid: every minute, all 5 symbols identical
+const full = (): Record<string, { minute_ts: number }[]> =>
+  Object.fromEntries(cov.symbols.map((s) => [s, gridArr().map((t) => ({ minute_ts: t }))]));
+
+describe('gap math', () => {
+  it('totalGap counts missing minutes', () => {
+    expect(totalGap([from, from + M], from, to)).toBe(8); // 10 slots, 2 present
+  });
+  it('maxConsecutiveGap includes leading and trailing edges', () => {
+    // present only minute index 4 → leading 4, trailing 5
+    expect(maxConsecutiveGap([from + 4 * M], from, to)).toBe(5);
+  });
+});
+
+describe('checkFixture', () => {
+  it('passes a full unified grid within budget', () => {
+    expect(checkFixture(cov, full())).toEqual([]);
+  });
+  it('fails a symbol-set mismatch (missing key)', () => {
+    const r = full(); delete r.E;
+    expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
+  });
+  it('fails an extra empty key (must NOT be silently filtered)', () => {
+    const r = { ...full(), X: [] as { minute_ts: number }[] };
+    expect(checkFixture(cov, r).some((e) => e.includes('symbols mismatch'))).toBe(true);
+  });
+  it('fails an empty declared symbol', () => {
+    const r = full(); r.E = [];
+    expect(checkFixture(cov, r).some((e) => e.includes('empty rows'))).toBe(true);
+  });
+  it('fails bars-only (no rows at all)', () => {
+    expect(checkFixture(cov, undefined).some((e) => e.includes('symbols mismatch'))).toBe(true);
+  });
+  it('fails a duplicate minute_ts', () => {
+    const r = full(); r.A = [...r.A!, { minute_ts: from }];
+    expect(checkFixture(cov, r).some((e) => e.includes('duplicate'))).toBe(true);
+  });
+  it('fails a misaligned minute_ts', () => {
+    const r = full(); r.A = [{ minute_ts: from + 30_000 }, ...r.A!.slice(1)];
+    expect(checkFixture(cov, r).some((e) => e.includes('not minute-aligned'))).toBe(true);
+  });
+  it('fails non-strictly-increasing rows', () => {
+    const r = full(); r.A = [r.A![1]!, r.A![0]!, ...r.A!.slice(2)];
+    expect(checkFixture(cov, r).some((e) => e.includes('strictly increasing'))).toBe(true);
+  });
+  it('fails non-identical grids', () => {
+    const r = full(); r.B = r.B!.slice(0, -1);
+    expect(checkFixture(cov, r).some((e) => e.includes('grid mismatch'))).toBe(true);
+  });
+  it('fails a row below fromMs', () => {
+    const r = full();
+    for (const s of cov.symbols) r[s] = [{ minute_ts: from - M }, ...r[s]!];
+    expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
+  });
+  it('fails a row at exactly toMs (half-open upper bound)', () => {
+    const r = full();
+    for (const s of cov.symbols) r[s] = [...r[s]!, { minute_ts: to }];
+    expect(checkFixture(cov, r).some((e) => e.includes('outside window'))).toBe(true);
+  });
+  it('total-gap boundary: == budget passes, +1 fails (consecutive budget relaxed)', () => {
+    const g = gridArr();
+    // drop the last N minutes → a trailing run of N; relax the consecutive budget so only total-gap gates
+    const covT = { ...cov, maxConsecutiveGapMinutes: 10 };
+    const keep = (n: number) => Object.fromEntries(cov.symbols.map((s) => [s, g.slice(0, g.length - n).map((t) => ({ minute_ts: t }))]));
+    expect(checkFixture(covT, keep(2))).toEqual([]);                                  // total gap == 2
+    expect(checkFixture(covT, keep(3)).some((e) => e.includes('total gap'))).toBe(true); // 3 > 2
+  });
+  it('consecutive-gap boundary: == budget passes, +1 fails (total budget relaxed)', () => {
+    const g = gridArr();
+    const covC = { ...cov, totalGapBudgetMinutes: 10 }; // only consecutive gates
+    const drop = (idx: number[]) => Object.fromEntries(cov.symbols.map((s) => [s, g.filter((_, i) => !idx.includes(i)).map((t) => ({ minute_ts: t }))]));
+    expect(checkFixture(covC, drop([3]))).toEqual([]);                                 // one-minute hole (== 1)
+    expect(checkFixture(covC, drop([3, 4])).some((e) => e.includes('consecutive'))).toBe(true); // two-minute hole
+  });
+});
