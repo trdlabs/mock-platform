@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { validateCoverageDoc } from '../../scripts/verify_fixtures.js';
 
 const ok = {
@@ -127,7 +128,7 @@ describe('checkFixture', () => {
 
 // append to test/scripts/verify-fixtures.test.ts
 import { runFixtureVerification } from '../../scripts/verify_fixtures.js';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,5 +149,70 @@ describe('runFixtureVerification', () => {
     mkdirSync(fx, { recursive: true });
     writeFileSync(join(fx, 'coverage.json'), '{ not json');
     expect(runFixtureVerification(d)).toBe(1);
+  });
+});
+
+// The repo's own committed fixtures are all coverage-less, so the gate is only ever observed at
+// "0 enforced" in CI. This exercises the ENFORCED path end to end against a real, loadable snapshot:
+// scan -> coverage schema -> loadSnapshot (secret-scan + manifest schema + version compat + checksum
+// + bundle schema) -> declared-vs-actual comparison -> exit 0.
+describe('runFixtureVerification: enforced fixture, end-to-end', () => {
+  const GOLDEN = 'data/snapshots/fixtures/historical-golden';
+  const SYMBOLS = ['AUSDT', 'BUSDT', 'CUSDT', 'DUSDT', 'HUSDT'];
+
+  /** Real loadable snapshot in a temp tree: the committed golden bundle (full, schema-valid ops
+   *  surface) with its rows re-keyed to exactly 5 symbols sharing one minute grid. */
+  function buildEnforcedFixture(): { baseDir: string; dir: string; gridMinutes: number } {
+    const golden = JSON.parse(readFileSync(join(GOLDEN, 'ops/bundle.json'), 'utf8')) as
+      Record<string, unknown> & {
+        historical: { rowsBySymbol: Record<string, Array<Record<string, unknown> & { minute_ts: number }>> };
+      };
+    const template = golden.historical.rowsBySymbol['BTCUSDT']!;
+    const rowsBySymbol = Object.fromEntries(
+      SYMBOLS.map((s) => [s, template.map((r) => ({ ...r, symbol: s }))]),
+    );
+    const bundleStr = JSON.stringify({ ...golden, historical: { ...golden.historical, rowsBySymbol } });
+
+    const baseDir = mkdtempSync(join(tmpdir(), 'vf-e2e-'));
+    const dir = join(baseDir, 'data/snapshots/wfo/e2e-enforced');
+    mkdirSync(join(dir, 'ops'), { recursive: true });
+    writeFileSync(join(dir, 'ops/bundle.json'), bundleStr);
+    writeFileSync(join(dir, 'checksums.json'), JSON.stringify({
+      'ops/bundle.json': createHash('sha256').update(bundleStr).digest('hex'),
+    }));
+    const manifest = JSON.parse(readFileSync(join(GOLDEN, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...manifest, ref: 'e2e-enforced' }));
+
+    // Declare the grid exactly: half-open window ending one minute past the last row, so the
+    // present minutes fill it with zero slack and both budgets can be 0.
+    const ts = template.map((r) => r.minute_ts);
+    const fromMs = ts[0]!;
+    const toMs = ts[ts.length - 1]! + 60_000;
+    writeFileSync(join(dir, 'coverage.json'), JSON.stringify({
+      schemaVersion: 'fixture-coverage.1',
+      period: { fromMs, toMs },
+      symbols: SYMBOLS,
+      totalGapBudgetMinutes: 0,
+      maxConsecutiveGapMinutes: 0,
+    }));
+    return { baseDir, dir, gridMinutes: (toMs - fromMs) / 60_000 };
+  }
+
+  it('passes a loadable fixture whose declared coverage matches its rows, and counts it as enforced', () => {
+    const { baseDir, dir, gridMinutes } = buildEnforcedFixture();
+    expect(gridMinutes).toBe(30); // the window is exactly the grid — no slack hiding a gap
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(runFixtureVerification(baseDir)).toBe(0);
+      const out = log.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(err).not.toHaveBeenCalled();
+      expect(out).toContain(`OK    ${dir}`);  // took the enforce branch, not the legacy WARN branch
+      expect(out).toContain('1 enforced');
+    } finally {
+      log.mockRestore();
+      err.mockRestore();
+    }
   });
 });
