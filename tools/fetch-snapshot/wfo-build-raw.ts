@@ -113,6 +113,10 @@ async function main(): Promise<void> {
     const { rows, collapsed, resolved } = dedupeRowsBySymbol(historical.rowsBySymbol);
     historical.rowsBySymbol = rows;
     console.log(`[dedupe] collapsed ${collapsed} exact duplicate row(s); resolved ${resolved} derived-metric conflict(s) last-writer-wins`);
+    // NOTE: only rowsBySymbol is repaired here. readParquetDir aggregated bars/funding/OI/liquidations
+    // from the pre-dedup rows, so this bundle's bars still double-count a re-written minute. That is
+    // tolerated because this artifact is transient and make-wfo-fixture re-derives every surface from
+    // the final rows; do not consume _raw bars directly.
     dedupeReport = {
       exactDuplicatesCollapsed: collapsed,
       derivedMetricConflictsResolved: resolved,

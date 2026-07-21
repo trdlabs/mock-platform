@@ -33,21 +33,78 @@ export function intersectToCommonGrid<R extends { minute_ts: number }>(
   return { grid, filtered, perSymbol };
 }
 
-export function filterBarsToWindow<B extends { tsMs: number }>(
-  bars: Record<string, Record<string, ReadonlyArray<B>>>,
-  fromMs: number,
-  toMs: number,
-): Record<string, Record<string, B[]>> {
-  const out: Record<string, Record<string, B[]>> = {};
-  for (const [sym, tfs] of Object.entries(bars)) {
-    out[sym] = {};
-    for (const [tf, arr] of Object.entries(tfs)) out[sym]![tf] = arr.filter((b) => b.tsMs >= fromMs && b.tsMs < toMs);
+interface DerivedRow {
+  minute_ts: number;
+  open: number; high: number; low: number; close: number; volume: number;
+  funding_rate?: number | null;
+  oi_total_usd?: number | null;
+  liq_long_usd?: number | null;
+  liq_short_usd?: number | null;
+}
+
+const DERIVED_TIMEFRAMES: ReadonlyArray<readonly [string, number]> = [['1h', 3_600_000], ['1d', 86_400_000]];
+
+/** Re-derive every historical surface from the FINAL row set, mirroring the exporter's
+ *  `aggregateHistorical`. Pure; testable without parquet.
+ *
+ *  These surfaces must be derived, not filtered. The source bundle's bars are aggregated by the
+ *  exporter BEFORE duplicate rows are collapsed, so a re-written minute is summed into its 1h/1d
+ *  `volume` twice; and its funding/OI/liquidation series span the whole 50-day probe pull, so
+ *  carrying them across a symbol filter alone would leak 8 days past a fixture that declares 42.
+ *  Deriving from `filtered` makes every surface agree with the rows the fixture actually ships and
+ *  puts them inside the declared window by construction rather than by a second filter that has to
+ *  be remembered. */
+export function deriveHistoricalSurfaces<R extends DerivedRow>(rowsBySymbol: Record<string, R[]>): {
+  barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number; open: number; high: number; low: number; close: number; volume: number }>>>;
+  fundingBySymbol: Record<string, Array<{ tsMs: number; symbol: string; rate: number }>>;
+  openInterestBySymbol: Record<string, Array<{ tsMs: number; symbol: string; openInterestUsd: number }>>;
+  liquidationsBySymbol: Record<string, Array<{ tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number }>>;
+} {
+  const barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number; open: number; high: number; low: number; close: number; volume: number }>>> = {};
+  const fundingBySymbol: Record<string, Array<{ tsMs: number; symbol: string; rate: number }>> = {};
+  const openInterestBySymbol: Record<string, Array<{ tsMs: number; symbol: string; openInterestUsd: number }>> = {};
+  const liquidationsBySymbol: Record<string, Array<{ tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number }>> = {};
+
+  for (const [sym, unsorted] of Object.entries(rowsBySymbol)) {
+    const rows = [...unsorted].sort((a, b) => a.minute_ts - b.minute_ts);
+    barsBySymbolAndTimeframe[sym] = {};
+    for (const [tf, tfMs] of DERIVED_TIMEFRAMES) {
+      const buckets = new Map<number, { tsMs: number; open: number; high: number; low: number; close: number; volume: number }>();
+      for (const r of rows) {
+        const bts = Math.floor(r.minute_ts / tfMs) * tfMs;
+        const b = buckets.get(bts);
+        if (!b) buckets.set(bts, { tsMs: bts, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume });
+        else {
+          b.high = Math.max(b.high, r.high);
+          b.low = Math.min(b.low, r.low);
+          b.close = r.close;
+          b.volume += r.volume;
+        }
+      }
+      barsBySymbolAndTimeframe[sym]![tf] = [...buckets.values()].sort((a, b) => a.tsMs - b.tsMs);
+    }
+
+    fundingBySymbol[sym] = rows
+      .filter((r) => r.funding_rate !== null && r.funding_rate !== undefined)
+      .map((r) => ({ tsMs: r.minute_ts, symbol: sym, rate: r.funding_rate as number }));
+
+    openInterestBySymbol[sym] = rows
+      .filter((r) => r.oi_total_usd !== null && r.oi_total_usd !== undefined)
+      .map((r) => ({ tsMs: r.minute_ts, symbol: sym, openInterestUsd: r.oi_total_usd as number }));
+
+    const liq: Array<{ tsMs: number; symbol: string; side: 'long' | 'short'; sizeUsd: number }> = [];
+    for (const r of rows) {
+      if ((r.liq_long_usd ?? null) === null && (r.liq_short_usd ?? null) === null) continue;
+      if ((r.liq_long_usd ?? 0) > 0) liq.push({ tsMs: r.minute_ts, symbol: sym, side: 'long', sizeUsd: r.liq_long_usd as number });
+      if ((r.liq_short_usd ?? 0) > 0) liq.push({ tsMs: r.minute_ts, symbol: sym, side: 'short', sizeUsd: r.liq_short_usd as number });
+    }
+    liquidationsBySymbol[sym] = liq;
   }
-  return out;
+  return { barsBySymbolAndTimeframe, fundingBySymbol, openInterestBySymbol, liquidationsBySymbol };
 }
 
 interface SrcHistorical {
-  rowsBySymbol?: Record<string, Array<{ minute_ts: number }>>;
+  rowsBySymbol?: Record<string, DerivedRow[]>;
   barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number }>>>;
   fundingBySymbol: Record<string, unknown[]>;
   openInterestBySymbol: Record<string, unknown[]>;
@@ -75,12 +132,10 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
   for (const s of symbols) rawRows[s] = (h.rowsBySymbol[s] ?? []).length;
 
   const { grid, filtered, perSymbol } = intersectToCommonGrid(h.rowsBySymbol, symbols, fromMs, toMs);
-  const pick = <V>(obj: Record<string, V>): Record<string, V> => Object.fromEntries(symbols.filter((s) => s in obj).map((s) => [s, obj[s]!]));
+  // Every other surface is re-derived from `filtered`, so all of them agree with the shipped rows
+  // and sit inside the declared window by construction. See deriveHistoricalSurfaces.
   const historical: SrcHistorical = {
-    barsBySymbolAndTimeframe: filterBarsToWindow(pick(h.barsBySymbolAndTimeframe), fromMs, toMs),
-    fundingBySymbol: pick(h.fundingBySymbol),
-    openInterestBySymbol: pick(h.openInterestBySymbol),
-    liquidationsBySymbol: pick(h.liquidationsBySymbol),
+    ...deriveHistoricalSurfaces(filtered),
     rowsBySymbol: filtered,
   };
   const fixture = { ...src, historical };
