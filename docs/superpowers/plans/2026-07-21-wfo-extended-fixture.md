@@ -1325,21 +1325,36 @@ A **runbook**, not TDD — one read-only VPS visit, everything else local. **Sto
 
 **Prerequisites:** `.env.rollout.local` with VPS credentials + parquet root (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
 
-- [ ] **Step 1: Gitignore the raw pull, commit it first**
+- [x] **Step 1: Fix the gitignore so the fixture is committable, commit it first**
 
-Add the line `data/snapshots/_raw/` to `.gitignore` **with your editor** (not `echo >>`, which can corrupt a no-trailing-newline file), then:
+`.gitignore` already ignores `/data/snapshots/*` with an allowlist for `fixtures/` only, so
+`_raw/` needs no new rule — but `data/snapshots/wfo/` would have been silently un-committable.
+Add the allowlist **with your editor** (not `echo >>`, which can corrupt a no-trailing-newline file):
+
+```
+!/data/snapshots/wfo/
+!/data/snapshots/wfo/**
+```
+
+Prove it with `git check-ignore` on a path under each of `_raw/`, `wfo/`, `fixtures/` before
+committing. `.dockerignore` needs no change: it allowlists `fixtures` only, which is what keeps the
+Step 9 inverse gate honest.
 
 ```bash
-git add .gitignore && git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
+git add .gitignore && git commit -m "chore: allowlist data/snapshots/wfo for commit, keep _raw and the rest ignored"
 ```
 
 - [ ] **Step 2: One temp root (trap-cleaned) + probe window**
 
-Run Steps 2–7 in a **single shell** so the `trap` covers an early exit. One `mktemp -d` holds the parquet cache and the two JSON files, so cleanup is a single `rm -rf` of a directory (never a recursive delete of a file), and nothing leaks if a ⛔ blocker aborts mid-run.
+One temp root holds the parquet cache and the two JSON files, so cleanup is a single `rm -rf` of a
+directory (never a recursive delete of a file).
+
+**Do not put the parquet cache under an `EXIT` trap.** The pull is ~1 GB and any ⛔ blocker in Steps
+4–7 would delete it, forcing a *second* VPS visit and breaking the one-visit constraint. Keep it in a
+session-scoped scratch directory and remove it explicitly once the fixture is committed.
 
 ```bash
-export TEMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TEMP_ROOT"' EXIT
+export TEMP_ROOT="$(mktemp -d)"   # NOT trap-cleaned — see above
 export PARQUET_CACHE="$TEMP_ROOT/parquet"   # fetch-snapshot mkdir -p's this
 export TURNOVER="$TEMP_ROOT/turnover.json"
 export RANKING="$TEMP_ROOT/ranking.json"
@@ -1352,14 +1367,32 @@ Record `probeFrom` / `probeTo` (ms).
 
 `rsync` downloads **all** symbols' parquet for the dates regardless of `--symbols`, so a primary-only run caches everything into `$PARQUET_CACHE` while materialising only a tiny bundle. `--to` is **inclusive of the whole day**, so pass `probeTo − 1 day`. `--parquet-root` is **required** or historical is null.
 
+Two things the credentials file does NOT give you directly:
+
+- **Never invoke this through `pnpm fetch:snapshot`** — the pnpm script wrapper echoes the full
+  `--db-url`, password included, into the transcript. Use `./node_modules/.bin/tsx` directly; the
+  tool masks the URL in its own logs.
+- **Rewrite the DB host.** `openTunnel` forwards `-L <tunnelPort>:<host-from-db-url>:<port>`, and the
+  stored `DATABASE_URL` already points at the *local* end of the tunnel (`127.0.0.1:15432`), so
+  passing it through forwards to nowhere. Rewrite host/port to the postgres container's docker-bridge
+  IP (`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
+  trading-platform-vps-postgres-1`) — it is routable from the VPS host, unlike the service name.
+- `pg` is forbidden in the lockfile. Install it transiently, and revert with
+  `git checkout -- package.json pnpm-lock.yaml && pnpm install --frozen-lockfile` **before**
+  `check:ci` or any `docker build`.
+
+Env var names are `DATABASE_URL` / `VPS_HOST` / `PARQUET_ROOT` / `SSH_KEY_PATH` / `SSH_PORT`.
+
 ```bash
-pnpm fetch:snapshot -- \
-  --db-url "$ROLLOUT_DB_URL" --vps "$ROLLOUT_VPS" \
-  --parquet-root "$ROLLOUT_PARQUET_ROOT" --parquet-local "$PARQUET_CACHE" \
+PATCHED="$(node -e 'const u=new URL(process.env.DATABASE_URL);u.hostname="<bridge-ip>";u.port="5432";process.stdout.write(u.toString())')"
+./node_modules/.bin/tsx tools/fetch-snapshot/fetch-snapshot.ts \
+  --db-url "$PATCHED" --vps "$VPS_HOST" --ssh-key "$SSH_KEY_PATH" \
+  --parquet-root "$PARQUET_ROOT" --parquet-local "$PARQUET_CACHE" \
   --from <probeFrom UTC date YYYY-MM-DD> --to <(probeTo − 1 day) UTC date YYYY-MM-DD> \
   --symbols HUSDT --ref _raw/wfo-probe --mode replace
 ```
 
+Measure the slice with `du -sh` over the window **before** pulling (it was ~1.03 GB for 50 days).
 If rsync brings no parquet or ops fails → ⛔ blocker.
 
 - [ ] **Step 4: Rank (local parquet aggregate) → 5 symbols**
@@ -1372,7 +1405,16 @@ SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- \
 echo "$SYMBOLS"   # e.g. HUSDT,AUSDT,BUSDT,CUSDT,DUSDT ; $RANKING now holds the ranking-provenance
 ```
 
-Non-zero exit / empty turnover → ⛔ blocker (no proxy fallback). A `duplicate (symbol, minute_ts)` or `non-finite` error from `wfo-turnover` is also a ⛔ blocker — investigate the parquet, do not work around it.
+Non-zero exit / empty turnover → ⛔ blocker (no proxy fallback). A `non-finite` error, a
+`conflicting duplicate` on a **price** field, or an `unclassified field` error is likewise a ⛔
+blocker — investigate the parquet, do not work around it.
+
+Same-minute re-writes that differ **only** in derived metrics (open interest, funding, taker flows,
+`schema_version`) are expected and are resolved last-writer-wins, counted into `provenance.json`.
+Measured on the 2026-06-01..07-20 corpus: 1431 such re-writes over 21,630,730 rows, zero price
+conflicts. Causes are the schema_version=1→2 migration (2026-06-12) and a platform update that
+paused and then back-filled writes (2026-07-03). If that count jumps by an order of magnitude, or
+any price conflict appears, stop and investigate rather than re-running.
 
 - [ ] **Step 5: Build the 5-symbol raw snapshot locally (no second visit)**
 
@@ -1402,7 +1444,7 @@ pnpm tsx scripts/make-wfo-fixture.ts -- \
   --out    data/snapshots/wfo/<from-date>-to-<to-date>-vps-wfo42d \
   --symbols "$SYMBOLS" --from <from ms> --to <to ms> \
   --total-gap-budget 6480 --max-consecutive-gap 1440 \
-  --ranking "$RANKING"
+  --ranking "$RANKING" --dedupe data/snapshots/_raw/wfo/dedupe.json
 ```
 
 Run: `pnpm verify:fixtures`
@@ -1460,6 +1502,21 @@ git add data/snapshots/wfo test/snapshot/wfo-nested-ref.test.ts
 git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nested-ref smoke"
 # (TEMP_ROOT was already removed by the Step 2 trap when the Steps 2–7 shell exited)
 ```
+
+**Outcome (executed 2026-07-21).** Probe window 2026-06-01..07-21, ~1.03 GB / 1691 part-files pulled
+in one visit. Ranking over 610 candidates selected HUSDT + BTCUSDT, ETHUSDT, SOLUSDT, HYPEUSDT.
+Selected window 2026-06-09..07-21 (42 days): 587/6480 total gap minutes, 168/1440 worst run, grid
+59,893. Committed as `data/snapshots/wfo/2026-06-09-to-2026-07-20-vps-wfo42d` (28 MB);
+`verify_fixtures: OK (1 enforced)`; image delta 144,962 bytes with `data/snapshots/wfo` absent.
+
+A v2-only window was considered (schema_version=2 starts 2026-06-12, capping the span at 39 days).
+Rejected on measurement: the three schema_version=1 days cost only 29 extra missing minutes while
+buying three extra days, so v2-only would have meant strictly less data *and* a change to the
+spec-frozen 42-day span with re-derived budgets.
+
+Four tool defects surfaced here and were fixed before the fixture was committed — turnover OOM,
+duplicate-guard granularity, filesystem-ordered rows, and the ops exporter omitting the schema-
+required `runId` on events. See commit `5ad6489`; this is what the gate is for.
 
 > **Task 8 is a required merge gate, not optional.** It is the only place the parquet
 > read/write shells run against real data; the branch must not merge until Task 8 has

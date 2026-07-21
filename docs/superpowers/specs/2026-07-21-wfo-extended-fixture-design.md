@@ -114,6 +114,23 @@ declared symbol's `rowsBySymbol[sym]`:
 The validator is self-contained — it does not assume the loader or bundle schema
 already guarantees these.
 
+**Where those guarantees come from.** The raw VPS parquet does *not* satisfy them: it
+contains same-minute re-writes (measured 2026-06-01..07-20: 1431 over 21,630,730 rows,
+from the schema_version=1→2 migration and a platform update that back-filled writes), and
+its date partitions are read in filesystem order. The authoring tool therefore resolves
+both **before** writing a fixture — one row per `(symbol, minute)` sorted ascending — under
+an explicitly asymmetric policy:
+
+- identical repeat → collapsed;
+- repeat differing only in derived metrics (open interest, funding, taker flows,
+  `schema_version`) → last writer wins, counted into `provenance.json`;
+- repeat differing in a **price** field (`open`/`high`/`low`/`close`/`volume`/`turnover`),
+  or in any field belonging to neither list → **fatal**, no fixture is produced.
+
+This keeps normalization at the authoring boundary where it is recorded, and keeps the
+validator's rules above as genuine assertions about the committed artifact rather than as
+things the writer merely intends.
+
 ### 1.5 Check order (fail-safe)
 
 Structural validity is checked **before** touching row data, so a missing declared
