@@ -69,7 +69,7 @@ the comparison is never allowed to become trivially true:
 - **declared** — the whole `coverage.json` — is written from the *fetch intent* (the
   chosen window, the 5 symbol names, the frozen budgets). It is **never** derived from
   bundle content. `fetch-snapshot` and `make-fixture` MUST NOT populate these values
-  from what they read; the authoring tool (`make-wfo-fixture.ts`, §2.4) takes them as
+  from what they read; the authoring tool (`make-wfo-fixture.ts`, §2.3) takes them as
   **required CLI flags**.
 - **actual** — computed **only** by `verify_fixtures.ts` from `rowsBySymbol`. The
   validator only reads and compares; it never writes.
@@ -81,7 +81,7 @@ For a half-open window `[fromMs, toMs)`, expected minute count
 
 **Unified minute grid.** The invariant is that the `minute_ts` set is **identical**
 across all 5 symbols; `G` is that common set (achieved by construction at fetch time,
-§2.3, and *verified* here in the committed artifact to defend against drift or hand
+§2.2, and *verified* here in the committed artifact to defend against drift or hand
 edits). Because the grid is shared, `present = |G|` is a single number, and every
 grid point in `G` is guaranteed to carry all 5 symbols — which is exactly what
 multi-symbol WFO needs.
@@ -156,27 +156,28 @@ one window: the **50 full UTC days** `[probeFrom, probeTo)`, where
 `probeTo = start_of(latest_complete_UTC_day + 1)` and
 `probeFrom = probeTo − 50·86400·1000`. It is recorded verbatim in provenance, so the
 ranking, the pull, and the chosen 42-day sub-window are all reproducible. 50 ≥ 42 gives
-the slack to slide the anchor (§2.3).
+the slack to slide the anchor (§2.2).
 
-### 2.1 Deterministic symbol ranking (frozen ahead of the probe)
+### 2.1 One read-only VPS visit; everything else is local
 
-- **Primary:** `HUSDT` (SSOT primary), always included.
-- **Top-4 by liquidity:** ranked by summed 1m turnover (`CanonicalRowV2.turnover` over
-  every minute of the probe window `[probeFrom, probeTo)`), computed **excluding
-  HUSDT**; ties broken by `symbol ASC`.
-- The ranking source is a VPS aggregate. If that aggregate is **unavailable**, this is
-  a **blocker** — do **not** fall back to ranking from the committed 7-day slice at
-  execution time (that would make selection non-deterministic).
-- Final set = `HUSDT` + the 4 ranked symbols. All five are recorded in provenance.
+`fetch-snapshot`'s `rsync` already downloads **all** symbols' parquet for the requested
+dates (it does not filter parquet by `--symbols`). We exploit that to keep the pull to a
+single visit and avoid ever materialising a 50-day all-symbol JSON bundle (a RAM/disk
+blow-up):
 
-### 2.2 Read-only pull (one VPS visit)
+1. **One read-only visit** pulls ops (Postgres) and `rsync`s all parquet for the 50-day
+   probe window into the local parquet cache. This produces a tiny throwaway `_raw`
+   snapshot for the primary symbol only (ops + `HUSDT` historical).
+2. **Ranking is a local column aggregate** over the cached parquet — only the `symbol`,
+   `close`, `volume` columns are read; turnover `= Σ close·volume` per symbol. `HUSDT`
+   is the primary; the top-4 **excluding HUSDT** by turnover, ties `symbol ASC`, complete
+   the set. If the cached parquet is missing/empty → **blocker** (no proxy fallback).
+3. **The 5-symbol raw snapshot is built locally** from the cached parquet (full rows for
+   only those 5) merged with the ops from step 1 — no second visit.
 
-Pull raw native-1m historical for the **5 selected symbols** over the probe window
-`[probeFrom, probeTo)` into a **local temporary** ref under `data/snapshots/` that is
-**not committed** and lives outside the two validator scan roots. This gives slack for
-choosing the 42-day anchor offline without further VPS round-trips.
+This keeps one visit, the original 5-symbol scope, and bounded RAM/disk.
 
-### 2.3 Window selection + intersection (local, offline)
+### 2.2 Window selection + intersection (local, offline)
 
 - **Window:** span is **exactly 42 days**; the only freedom is the anchor.
   `toMs = start_of(latest_complete_UTC_day + 1)`, `fromMs = toMs − 42·86400·1000`.
@@ -190,7 +191,7 @@ choosing the 42-day anchor offline without further VPS round-trips.
   `[fromMs, toMs)`**. Otherwise a fixture declaring a 42-day coverage window would leak
   data outside it through the bars surface.
 
-### 2.4 Authoring — sidecars from intent (local)
+### 2.3 Authoring — sidecars from intent (local)
 
 New `scripts/make-wfo-fixture.ts` reads the raw local source fixture and produces the
 aligned committed fixture. It takes as **required flags**: `--symbols`, `--from`,
@@ -200,32 +201,38 @@ aligned committed fixture. It takes as **required flags**: `--symbols`, `--from`
   checksums, gzip when raw > 90 MiB — expected here);
 - writes `coverage.json` **from those flags** — never from the produced bundle (this is
   the §1.2 invariant made structural);
-- writes `provenance.json` (§2.5).
+- writes `provenance.json` (§2.4).
 
-### 2.5 Provenance (`provenance.json`, descriptive sidecar, not a gate input)
+### 2.4 Provenance (`provenance.json`, descriptive sidecar, not a gate input)
 
 Records enough to reproduce the selection and trimming and to distinguish
-"absent on the VPS" from "intentional trimming":
+"absent on the VPS" from "intentional trimming". Per symbol, the attrition chain is
+split so the probe-surplus drop is **not** confused with VPS absence (`E` is the
+selected-window minute count `(toMs − fromMs)/60000`):
 
-- note: rows filtered to the intersection of the 5 source series;
-- per symbol, the full attrition chain (so VPS absence is distinguishable from
-  trimming):
-  - `rawRowsInProbeWindow` — rows the VPS returned over `[probeFrom, probeTo)`;
-  - `rowsInSelectedWindowBeforeIntersection` — rows inside the chosen `[fromMs, toMs)`;
-  - `finalRowsAfterIntersection` — rows kept on the common grid `G`;
-  - `droppedByWindow` = raw − in-window; `droppedByIntersection` = in-window − final;
-- `|G|` (common grid size) and the chosen `[fromMs, toMs)`;
-- the ranking source and the **tie-break algorithm** (`top-4 by summed 1m turnover,
-  excl. HUSDT, ties by symbol ASC`);
-- the **raw source ref** and the **sha256 of its raw (pre-gzip) bundle bytes**.
+- `rawRowsInProbeWindow` — rows the VPS returned over the 50-day `[probeFrom, probeTo)`;
+- `rowsInSelectedWindowBeforeIntersection` — rows inside the chosen 42-day `[fromMs, toMs)`;
+- `missingMinutesInSelectedWindow` = `E − rowsInSelectedWindowBeforeIntersection` —
+  genuine VPS absence inside the WFO window (this, not the probe surplus, is the
+  data-quality signal);
+- `droppedOutsideSelectedWindow` = `rawRowsInProbeWindow − rowsInSelectedWindowBeforeIntersection`
+  — the 8-day probe surplus removed by windowing (expected, not absence);
+- `finalRowsAfterIntersection` — rows kept on the common grid `G`;
+- `droppedByIntersection` = `rowsInSelectedWindowBeforeIntersection − finalRowsAfterIntersection`
+  — rows dropped because another symbol lacked that minute.
 
-### 2.6 Validate → commit
+Plus: `note` (rows filtered to the intersection of the 5 source series); `|G|` and the
+chosen `[fromMs, toMs)`; the ranking source and **tie-break algorithm** (`top-4 by
+summed 1m turnover, excl. HUSDT, ties by symbol ASC`); the **raw source ref** and the
+**sha256 of its raw (pre-gzip) bundle bytes**.
+
+### 2.5 Validate → commit
 
 `verify:fixtures` in enforce mode on the T2 fixture must be **green**; `pnpm check:ci`
 green. Only then commit: bundle + `manifest.json` + `checksums.json` + `coverage.json`
 + `provenance.json`, at `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/`.
 
-### 2.7 Where T2 lives — image stays unchanged
+### 2.6 Where T2 lives — image stays unchanged
 
 The Dockerfile does `COPY data/snapshots/fixtures` only, so committing T2 under
 `data/snapshots/wfo/` keeps the **T2 payload out of the image** (the card's "default

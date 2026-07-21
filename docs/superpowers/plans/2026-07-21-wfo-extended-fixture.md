@@ -630,12 +630,14 @@ describe('writeWfoFixture (end-to-end)', () => {
     const checks = JSON.parse(readFileSync(join(out, 'checksums.json'), 'utf8'));
     expect(checks[res.bundleRef]).toMatch(/^[0-9a-f]{64}$/);
 
-    // 4. provenance records the attrition chain per symbol
+    // 4. provenance splits VPS absence from probe-surplus and intersection loss
     const prov = JSON.parse(readFileSync(join(out, 'provenance.json'), 'utf8'));
+    const E = (toMs - fromMs) / M;
     for (const s of symbols) {
       const p = prov.perSymbol[s];
       expect(p.finalRowsAfterIntersection).toBe(res.gridSize);
-      expect(p.droppedByWindow).toBe(p.rawRowsInProbeWindow - p.rowsInSelectedWindowBeforeIntersection);
+      expect(p.missingMinutesInSelectedWindow).toBe(E - p.rowsInSelectedWindowBeforeIntersection);
+      expect(p.droppedOutsideSelectedWindow).toBe(p.rawRowsInProbeWindow - p.rowsInSelectedWindowBeforeIntersection);
       expect(p.droppedByIntersection).toBe(p.rowsInSelectedWindowBeforeIntersection - p.finalRowsAfterIntersection);
     }
     expect(existsSync(join(out, 'provenance.json'))).toBe(true);
@@ -771,13 +773,21 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
     window: { fromMs, toMs },
     commonGridSize: grid.length,
     rankingTieBreak: 'top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC',
-    perSymbol: Object.fromEntries(symbols.map((s) => [s, {
-      rawRowsInProbeWindow: rawRows[s],
-      rowsInSelectedWindowBeforeIntersection: perSymbol[s]!.inWindow,
-      finalRowsAfterIntersection: perSymbol[s]!.final,
-      droppedByWindow: rawRows[s]! - perSymbol[s]!.inWindow,
-      droppedByIntersection: perSymbol[s]!.inWindow - perSymbol[s]!.final,
-    }])),
+    perSymbol: Object.fromEntries(symbols.map((s) => {
+      const raw = rawRows[s]!; const inWin = perSymbol[s]!.inWindow; const fin = perSymbol[s]!.final;
+      const E = (toMs - fromMs) / 60_000;
+      return [s, {
+        rawRowsInProbeWindow: raw,
+        rowsInSelectedWindowBeforeIntersection: inWin,
+        // genuine VPS absence inside the 42d window — the data-quality signal
+        missingMinutesInSelectedWindow: E - inWin,
+        // the probe surplus removed by windowing (expected, NOT absence)
+        droppedOutsideSelectedWindow: raw - inWin,
+        finalRowsAfterIntersection: fin,
+        // rows dropped because another symbol lacked that minute
+        droppedByIntersection: inWin - fin,
+      }];
+    })),
   }, null, 2));
 
   loadSnapshot(out); // fail loudly if the written fixture does not load
@@ -822,19 +832,19 @@ git commit -m "feat(fixtures): make-wfo-fixture — writeWfoFixture with sidecar
 
 ---
 
-### Task 6: Deterministic ranking + window selection (`wfo-select.ts`) + `wfo-probe` CLI
+### Task 6: Deterministic ranking + window selection (`wfo-select.ts`) + `wfo-rank` / `wfo-probe` CLIs
 
-Testable pure functions so ranking and anchor selection are executable, not prose.
+Testable pure functions so ranking and anchor selection are executable, not prose. Ranking is split from window selection because ranking runs on a parquet turnover map (Task 7) *before* the 5-symbol snapshot exists, while window selection runs on that snapshot.
 
 **Files:**
 - Create: `scripts/wfo-select.ts`
+- Create: `scripts/wfo-rank.ts`
 - Create: `scripts/wfo-probe.ts`
 - Test: `test/scripts/wfo-select.test.ts`
 
 **Interfaces:**
 - Consumes: `intersectToCommonGrid` (`./make-wfo-fixture.js`), `totalGap` / `maxConsecutiveGap` (`./verify_fixtures.js`).
 - Produces:
-  - `sumTurnover(rowsBySymbol: Record<string, ReadonlyArray<{ turnover: number }>>): Record<string, number>`
   - `rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary: string, count: number): string[]`
   - `selectWfoWindow(rowsBySymbol, symbols: string[], probeFrom: number, probeTo: number, spanDays: number, totalGapBudgetMinutes: number, maxConsecutiveGapMinutes: number): { fromMs: number; toMs: number } | null`
 
@@ -843,16 +853,10 @@ Testable pure functions so ranking and anchor selection are executable, not pros
 ```ts
 // test/scripts/wfo-select.test.ts
 import { describe, it, expect } from 'vitest';
-import { sumTurnover, rankWfoSymbols, selectWfoWindow } from '../../scripts/wfo-select.js';
+import { rankWfoSymbols, selectWfoWindow } from '../../scripts/wfo-select.js';
 
 const M = 60_000;
 const DAY = 86_400_000;
-
-describe('sumTurnover', () => {
-  it('sums turnover per symbol', () => {
-    expect(sumTurnover({ A: [{ turnover: 2 }, { turnover: 3 }], B: [{ turnover: 5 }] })).toEqual({ A: 5, B: 5 });
-  });
-});
 
 describe('rankWfoSymbols', () => {
   it('puts primary first, then top-N by turnover desc, ties symbol ASC', () => {
@@ -860,10 +864,12 @@ describe('rankWfoSymbols', () => {
     // excl HUSDT, top-3: ZUSDT(100), then AUSDT/BUSDT tie(50)→ASC, so AUSDT, BUSDT
     expect(rankWfoSymbols(t, 'HUSDT', 3)).toEqual(['HUSDT', 'ZUSDT', 'AUSDT', 'BUSDT']);
   });
+  it('includes the primary even if it has no turnover entry', () => {
+    expect(rankWfoSymbols({ ZUSDT: 9, AUSDT: 8 }, 'HUSDT', 1)).toEqual(['HUSDT', 'ZUSDT']);
+  });
 });
 
 describe('selectWfoWindow', () => {
-  // build 3 days of a fully dense 1m grid shared by 2 symbols
   const probeFrom = 0;
   const probeTo = 3 * DAY;
   const dense = (): Record<string, { minute_ts: number }[]> => {
@@ -871,13 +877,11 @@ describe('selectWfoWindow', () => {
     return { A: g.map((t) => ({ minute_ts: t })), B: g.map((t) => ({ minute_ts: t })) };
   };
   it('returns the freshest 1-day window that fits within budget', () => {
-    const w = selectWfoWindow(dense(), ['A', 'B'], probeFrom, probeTo, 1, 0, 0);
-    expect(w).toEqual({ fromMs: 2 * DAY, toMs: 3 * DAY }); // freshest 1-day slice, zero gaps
+    expect(selectWfoWindow(dense(), ['A', 'B'], probeFrom, probeTo, 1, 0, 0)).toEqual({ fromMs: 2 * DAY, toMs: 3 * DAY });
   });
   it('returns null when no window fits the budget', () => {
     const r = dense();
-    // punch a 2-day hole into B everywhere → intersection is tiny → over budget
-    r.B = r.B.filter((_, i) => i % 10_000 === 0);
+    r.B = r.B.filter((_, i) => i % 10_000 === 0); // B nearly empty → intersection tiny
     expect(selectWfoWindow(r, ['A', 'B'], probeFrom, probeTo, 1, 5, 5)).toBeNull();
   });
 });
@@ -888,7 +892,7 @@ describe('selectWfoWindow', () => {
 Run: `pnpm vitest run test/scripts/wfo-select.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write `wfo-select.ts` and `wfo-probe.ts`**
+- [ ] **Step 3: Write `wfo-select.ts`, `wfo-rank.ts`, `wfo-probe.ts`**
 
 ```ts
 // scripts/wfo-select.ts
@@ -896,12 +900,6 @@ import { intersectToCommonGrid } from './make-wfo-fixture.js';
 import { totalGap, maxConsecutiveGap } from './verify_fixtures.js';
 
 const DAY_MS = 86_400_000;
-
-export function sumTurnover(rowsBySymbol: Record<string, ReadonlyArray<{ turnover: number }>>): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const [s, rows] of Object.entries(rowsBySymbol)) out[s] = rows.reduce((a, r) => a + (r.turnover ?? 0), 0);
-  return out;
-}
 
 /** primary first, then the top `count` other symbols by turnover desc, ties by symbol ASC. */
 export function rankWfoSymbols(turnoverBySymbol: Record<string, number>, primary: string, count: number): string[] {
@@ -936,12 +934,36 @@ export function selectWfoWindow(
 ```
 
 ```ts
-// scripts/wfo-probe.ts
-// Read-only: reads the LOCAL raw pull (no VPS), prints the 5 selected symbols and the chosen
-// 42-day window, or exits non-zero (a blocker) when no window fits the frozen budgets.
+// scripts/wfo-rank.ts — reads a {SYMBOL: turnover} JSON map (from tools/fetch-snapshot/wfo-turnover.ts)
+// and prints the ranked 5 symbols, or exits non-zero (blocker) if it cannot produce enough.
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { rankWfoSymbols } from './wfo-select.js';
+
+function arg(name: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
+  throw new Error(`missing required --${name}`);
+}
+
+function main(): void {
+  const turnover = JSON.parse(readFileSync(arg('turnover'), 'utf8')) as Record<string, number>;
+  const primary = arg('primary').toUpperCase();
+  const count = Number(arg('count'));
+  const symbols = rankWfoSymbols(turnover, primary, count);
+  if (symbols.length !== count + 1) { console.error(`BLOCKER: ranked ${symbols.length} symbols, need ${count + 1}`); process.exit(2); }
+  console.log(symbols.join(','));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+```
+
+```ts
+// scripts/wfo-probe.ts — reads the LOCAL 5-symbol raw snapshot (no VPS), prints the chosen
+// 42-day window, or exits non-zero (blocker) when no window fits the frozen budgets.
 import { pathToFileURL } from 'node:url';
 import { loadSnapshot } from '../src/snapshot/loader.js';
-import { sumTurnover, rankWfoSymbols, selectWfoWindow } from './wfo-select.js';
+import { selectWfoWindow } from './wfo-select.js';
 
 function arg(name: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -951,27 +973,21 @@ function arg(name: string): string {
 
 function main(): void {
   const source = arg('source');
-  const primary = arg('primary').toUpperCase();
-  const count = Number(arg('count'));
+  const symbols = arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
   const probeFrom = Number(arg('probe-from'));
   const probeTo = Number(arg('probe-to'));
   const spanDays = Number(arg('span-days'));
   const totalGapBudget = Number(arg('total-gap-budget'));
-  const maxConsecutiveGap = Number(arg('max-consecutive-gap'));
+  const maxConsecutiveGapM = Number(arg('max-consecutive-gap'));
 
-  const bundle = loadSnapshot(source).bundle as unknown as {
-    historical?: { rowsBySymbol?: Record<string, Array<{ minute_ts: number; turnover: number }>> };
-  };
-  const rows = bundle.historical?.rowsBySymbol;
+  const rows = (loadSnapshot(source).bundle as unknown as {
+    historical?: { rowsBySymbol?: Record<string, Array<{ minute_ts: number }>> };
+  }).historical?.rowsBySymbol;
   if (!rows) { console.error('BLOCKER: source has no historical.rowsBySymbol'); process.exit(2); }
 
-  const symbols = rankWfoSymbols(sumTurnover(rows), primary, count);
-  if (symbols.length !== count + 1) { console.error(`BLOCKER: ranked ${symbols.length} symbols, need ${count + 1}`); process.exit(2); }
+  const win = selectWfoWindow(rows, symbols, probeFrom, probeTo, spanDays, totalGapBudget, maxConsecutiveGapM);
+  if (!win) { console.error('BLOCKER: no contiguous 42-day window fits the frozen budgets — do not tune budgets, do not substitute synthetic data'); process.exit(2); }
 
-  const win = selectWfoWindow(rows, symbols, probeFrom, probeTo, spanDays, totalGapBudget, maxConsecutiveGap);
-  if (!win) { console.error('BLOCKER: no contiguous window fits the frozen gap budgets — do not tune budgets, do not substitute synthetic data'); process.exit(2); }
-
-  console.log(`symbols=${symbols.join(',')}`);
   console.log(`from=${win.fromMs}`);
   console.log(`to=${win.toMs}`);
 }
@@ -989,83 +1005,219 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/wfo-select.ts scripts/wfo-probe.ts test/scripts/wfo-select.test.ts
-git commit -m "feat(fixtures): wfo-select (rank/window) + wfo-probe CLI"
+git add scripts/wfo-select.ts scripts/wfo-rank.ts scripts/wfo-probe.ts test/scripts/wfo-select.test.ts
+git commit -m "feat(fixtures): wfo-select (rank/window) + wfo-rank + wfo-probe CLIs"
 ```
 
 ---
 
-### Task 7: Fetch, produce, validate, and commit the T2 fixture (item 1, data) + smoke + Docker gate
+### Task 7: Parquet ranking/build tools (one visit), then fetch → produce → validate → commit T2
 
-A **runbook**, not TDD — it runs the single read-only VPS pull and commits the fixture. The only automated tests are the nested-ref smoke and the Docker inverse gate. **Stop and report a blocker** at any ⛔.
+The pull is **one read-only VPS visit** (ops + rsync of all parquet); ranking and the 5-symbol raw snapshot are then built **locally** from the cached parquet, so no 50-day all-symbol JSON bundle is ever materialised. The two parquet tools live under `tools/fetch-snapshot/` (its own isolated deps: `hyparquet`); they reuse the existing reader and never import from `src/contract`. The rest is a runbook — **stop and report a blocker** at any ⛔.
 
 **Files:**
+- Modify: `tools/fetch-snapshot/fetch-snapshot.ts` (export `readParquetDir`)
+- Create: `tools/fetch-snapshot/wfo-turnover.ts`
+- Create: `tools/fetch-snapshot/wfo-build-raw.ts`
 - Modify: `.gitignore` (add `data/snapshots/_raw/`)
-- Create (generated): `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/` (bundle, `manifest.json`, `checksums.json`, `coverage.json`, `provenance.json`)
+- Create (generated): `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/`
 - Test: `test/snapshot/wfo-nested-ref.test.ts`
 
 **Prerequisites:** `.env.rollout.local` with VPS credentials + parquet root (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
 
-- [ ] **Step 1: Gitignore the raw pull, commit it first**
+- [ ] **Step 1: Export `readParquetDir` and add the two parquet tools**
+
+In `tools/fetch-snapshot/fetch-snapshot.ts`, change `async function readParquetDir(` to `export async function readParquetDir(` (no other change).
+
+```ts
+// tools/fetch-snapshot/wfo-turnover.ts
+// Local, read-only column aggregate over cached parquet: turnover = Σ close·volume per symbol,
+// within [from, to). Reads only symbol/close/volume columns. Prints a JSON {SYMBOL: turnover} map.
+import { existsSync, readdirSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+function arg(name: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
+  throw new Error(`missing required --${name}`);
+}
+
+async function main(): Promise<void> {
+  const localRoot = arg('parquet-local');
+  const tsFrom = Number(arg('from'));
+  const tsTo = Number(arg('to'));
+
+  const { parquetReadObjects } = await import('hyparquet');
+  const { compressors } = await import('hyparquet-compressors');
+  const { asyncBufferFromFile } = (await import('hyparquet/src/node.js')) as {
+    asyncBufferFromFile: (p: string) => Promise<{ byteLength: number; slice(s: number, e?: number): ArrayBuffer | Promise<ArrayBuffer> }>;
+  };
+
+  const turnover: Record<string, number> = {};
+  for (const sv of [1, 2] as const) {
+    const svDir = join(localRoot, `schema_version=${sv}`);
+    if (!existsSync(svDir)) continue;
+    for (const entry of readdirSync(svDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('date=')) continue;
+      const partDir = join(svDir, entry.name);
+      for (const f of await readdir(partDir)) {
+        if (!f.startsWith('part-') || !f.endsWith('.parquet')) continue;
+        const file = await asyncBufferFromFile(join(partDir, f));
+        const rows = (await parquetReadObjects({ file, columns: ['minute_ts', 'symbol', 'close', 'volume'], compressors })) as Record<string, unknown>[];
+        for (const r of rows) {
+          const ts = Number(r['minute_ts']);
+          if (ts < tsFrom || ts >= tsTo) continue;
+          const sym = String(r['symbol']).trim().toUpperCase();
+          turnover[sym] = (turnover[sym] ?? 0) + Number(r['close']) * Number(r['volume']);
+        }
+      }
+    }
+  }
+  process.stdout.write(JSON.stringify(turnover));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
+```
+
+```ts
+// tools/fetch-snapshot/wfo-build-raw.ts
+// Build a 5-symbol raw snapshot LOCALLY from cached parquet (no VPS): full historical for the 5
+// symbols over the probe window, merged with the ops from the primary-only probe bundle. Reuses
+// the SAME writer primitives the mock loader expects (checksums + gzip).
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { sha256Hex } from '../../src/snapshot/checksums.js';
+import { bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../../src/snapshot/bundle-io.js';
+import type { SnapshotManifest } from '../../src/contract/snapshot/manifest.js';
+import { readParquetDir } from './fetch-snapshot.js';
+
+function arg(name: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1] as string;
+  throw new Error(`missing required --${name}`);
+}
+
+async function main(): Promise<void> {
+  const probe = arg('probe');              // _raw/wfo-probe (ops + primary historical)
+  const out = arg('out');                  // _raw/wfo (5-symbol raw)
+  const parquetLocal = arg('parquet-local');
+  const symbols = arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const tsFrom = Number(arg('from'));      // probeFrom
+  const tsTo = Number(arg('to'));          // probeTo
+
+  const probeManifest = JSON.parse(readFileSync(join(probe, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
+  const base = JSON.parse(decodeBundleFileBytes(readFileSync(join(probe, probeManifest.bundleRef)), probeManifest.bundleRef).toString('utf8')) as Record<string, unknown>;
+
+  const historical = await readParquetDir(parquetLocal, symbols, tsFrom, tsTo); // 5-symbol HistoricalBundle
+  const bundle = { ...base, historical };
+  const bytes = Buffer.from(JSON.stringify(bundle), 'utf8');
+  const bundleRef = bundleRefForByteLength(bytes.length);
+  const encoded = encodeBundleFileBytes(bytes, bundleRef);
+
+  const ref = out.split('/').filter(Boolean).slice(-1)[0]!;
+  const manifest: SnapshotManifest = { ref, createdAtMs: Date.now(), versions: { ...probeManifest.versions } as SnapshotManifest['versions'], bundleRef, checksumsRef: 'checksums.json' };
+  mkdirSync(join(out, 'ops'), { recursive: true });
+  writeFileSync(join(out, bundleRef), encoded);
+  writeFileSync(join(out, 'checksums.json'), JSON.stringify({ [bundleRef]: sha256Hex(encoded) }, null, 2));
+  writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  console.log(`raw 5-symbol snapshot written to ${out} (${symbols.join(', ')})`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
+```
+
+Run: `pnpm typecheck`
+Expected: PASS.
 
 ```bash
-grep -qxF 'data/snapshots/_raw/' .gitignore || echo 'data/snapshots/_raw/' >> .gitignore
+git add tools/fetch-snapshot/fetch-snapshot.ts tools/fetch-snapshot/wfo-turnover.ts tools/fetch-snapshot/wfo-build-raw.ts
+git commit -m "feat(fetch-snapshot): export readParquetDir; add wfo-turnover + wfo-build-raw parquet tools"
+```
+
+- [ ] **Step 2: Gitignore the raw pull, commit it first**
+
+Add the line `data/snapshots/_raw/` to `.gitignore` **with your editor** (not `echo >>`, which can corrupt a no-trailing-newline file), then:
+
+```bash
 git add .gitignore
 git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
 ```
 
-- [ ] **Step 2: Fix the probe window (UTC)**
+- [ ] **Step 3: Fix the probe window (UTC)**
 
 Compute `probeTo = start_of(latest_complete_UTC_day + 1)` (ms) and `probeFrom = probeTo − 50·86_400_000`. Record both integers — every later step reuses them.
 
-- [ ] **Step 3: One read-only pull of ALL symbols over the probe window**
+- [ ] **Step 4: One read-only VPS visit (ops + rsync of all parquet)**
 
-`fetch-snapshot`'s `--to` is **inclusive of the whole day**, so to cover the half-open `[probeFrom, probeTo)` pass the date of `probeTo − 1 day` as `--to`. `--parquet-root` is **required** or historical comes back null.
+`fetch-snapshot`'s `rsync` downloads **all** symbols' parquet for the dates regardless of `--symbols`, so a primary-only run caches everything while materialising only a tiny bundle. `--to` is **inclusive of the whole day**, so pass `probeTo − 1 day` to cover `[probeFrom, probeTo)`. `--parquet-root` is **required** or historical is null. Note the local parquet cache path (`--parquet-local`, default `/tmp/mock-parquet`).
 
 ```bash
-NODE_OPTIONS=--max-old-space-size=4096 pnpm fetch:snapshot -- \
+pnpm fetch:snapshot -- \
   --db-url "$ROLLOUT_DB_URL" --vps "$ROLLOUT_VPS" \
-  --parquet-root "$ROLLOUT_PARQUET_ROOT" \
+  --parquet-root "$ROLLOUT_PARQUET_ROOT" --parquet-local /tmp/mock-parquet \
   --from <probeFrom UTC date YYYY-MM-DD> \
   --to   <(probeTo − 1 day) UTC date YYYY-MM-DD> \
+  --symbols HUSDT \
   --ref  _raw/wfo-probe --mode replace
 ```
 
-Confirm native 1m rows exist (`writeSnapshot` logs the count; or `openSnapshot('data/snapshots','_raw/wfo-probe').bundle.historical.rowsBySymbol`). If `historical` is null or any expected symbol has no 1m rows → ⛔ blocker.
+If rsync brings no parquet or ops fails → ⛔ blocker.
 
-- [ ] **Step 4: Rank symbols + select the 42-day window (offline, testable code)**
+- [ ] **Step 5: Rank (local parquet aggregate) → 5 symbols**
+
+```bash
+pnpm tsx tools/fetch-snapshot/wfo-turnover.ts -- \
+  --parquet-local /tmp/mock-parquet --from <probeFrom ms> --to <probeTo ms> > /tmp/wfo-turnover.json
+
+SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- --turnover /tmp/wfo-turnover.json --primary HUSDT --count 4)
+echo "$SYMBOLS"   # e.g. HUSDT,AUSDT,BUSDT,CUSDT,DUSDT
+```
+
+A non-zero exit / empty turnover map → ⛔ blocker (no proxy fallback).
+
+- [ ] **Step 6: Build the 5-symbol raw snapshot locally (no second visit)**
+
+```bash
+pnpm tsx tools/fetch-snapshot/wfo-build-raw.ts -- \
+  --probe data/snapshots/_raw/wfo-probe --out data/snapshots/_raw/wfo \
+  --parquet-local /tmp/mock-parquet --symbols "$SYMBOLS" \
+  --from <probeFrom ms> --to <probeTo ms>
+```
+
+- [ ] **Step 7: Select the 42-day window (offline, tested code)**
 
 ```bash
 pnpm tsx scripts/wfo-probe.ts -- \
-  --source data/snapshots/_raw/wfo-probe \
-  --primary HUSDT --count 4 \
+  --source data/snapshots/_raw/wfo --symbols "$SYMBOLS" \
   --probe-from <probeFrom ms> --probe-to <probeTo ms> \
   --span-days 42 --total-gap-budget 6480 --max-consecutive-gap 1440
 ```
 
-Prints `symbols=...`, `from=<ms>`, `to=<ms>`. A non-zero exit is a ⛔ blocker (message says which: no rows, or no window fits the frozen budgets). Do **not** tune the budgets or substitute synthetic data.
+Prints `from=<ms>` / `to=<ms>`. Non-zero exit = ⛔ blocker (no window fits the frozen budgets). Do **not** tune budgets or substitute synthetic data.
 
-- [ ] **Step 5: Produce the aligned fixture**
+- [ ] **Step 8: Produce the aligned committed fixture**
 
 ```bash
 pnpm tsx scripts/make-wfo-fixture.ts -- \
-  --source data/snapshots/_raw/wfo-probe \
+  --source data/snapshots/_raw/wfo \
   --out    data/snapshots/wfo/<from-date>-to-<to-date>-vps-wfo42d \
-  --symbols <symbols from step 4> \
-  --from <from ms> --to <to ms> \
+  --symbols "$SYMBOLS" --from <from ms> --to <to ms> \
   --total-gap-budget 6480 --max-consecutive-gap 1440
 ```
 
-- [ ] **Step 6: Validate in enforce mode — green before committing**
+- [ ] **Step 9: Validate in enforce mode — green before committing**
 
 Run: `pnpm verify:fixtures`
 Expected: `OK    data/snapshots/wfo/<ref>` and `verify_fixtures: OK (1 enforced, legacy warned)`.
 Run: `pnpm check:ci`
 Expected: exit 0.
 
-If `verify:fixtures` FAILs, do **not** commit — the `provenance.json` per-symbol attrition tells you whether the shortfall is VPS absence (`droppedByWindow`) or intersection (`droppedByIntersection`).
+If `verify:fixtures` FAILs, do **not** commit — `provenance.json` tells you whether the shortfall is genuine VPS absence (`missingMinutesInSelectedWindow`) or grid alignment (`droppedByIntersection`), as distinct from the expected probe surplus (`droppedOutsideSelectedWindow`).
 
-- [ ] **Step 7: Write and run the nested-ref smoke test**
+- [ ] **Step 10: Write and run the nested-ref smoke test**
 
 ```ts
 // test/snapshot/wfo-nested-ref.test.ts
@@ -1087,14 +1239,15 @@ describe('nested wfo ref', () => {
 Run: `pnpm vitest run test/snapshot/wfo-nested-ref.test.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Docker inverse gate — three assertions with real byte sizes**
+- [ ] **Step 11: Docker inverse gate — real byte sizes, isolation-safe worktree**
 
 ```bash
-# baseline image from origin/main (before this branch); branch image from the working tree
-git worktree add /tmp/mp-base origin/main
-docker build -q -t trading-mock-platform:base /tmp/mp-base
+# unique baseline worktree; trap removes ONLY the one we created (parallel-session safe)
+BASE_WT="$(mktemp -d)/mp-base"
+trap 'git worktree remove --force "$BASE_WT" 2>/dev/null || true' EXIT
+git worktree add "$BASE_WT" origin/main
+docker build -q -t trading-mock-platform:base "$BASE_WT"
 docker build -q -t trading-mock-platform:wfo .
-git worktree remove --force /tmp/mp-base
 
 BASE=$(docker image inspect -f '{{.Size}}' trading-mock-platform:base)
 WFO=$(docker image inspect -f '{{.Size}}' trading-mock-platform:wfo)
@@ -1102,13 +1255,13 @@ echo "delta bytes: $((WFO - BASE))"
 
 # 1. the wfo tree is absent from the image
 docker run --rm --entrypoint sh trading-mock-platform:wfo -c 'test ! -e data/snapshots/wfo && echo WFO-ABSENT'
-# 2/3. no T2-sized growth: delta must be well under the ~20 MB payload (allow 5 MB of build noise)
-test "$((WFO - BASE))" -lt 5000000 && echo "SIZE-OK"
+# 2/3. no T2-sized growth: delta well under the ~20 MB payload (allow 5 MB of build noise)
+test "$((WFO - BASE))" -lt 5000000 && echo SIZE-OK
 ```
 
-Expected: `WFO-ABSENT` and `SIZE-OK`. If either fails, the Dockerfile COPY scope changed unexpectedly → investigate (do not commit).
+Expected: `WFO-ABSENT` and `SIZE-OK`. Either failing means the Dockerfile COPY scope changed → investigate (do not commit).
 
-- [ ] **Step 9: Commit the fixture and the smoke test**
+- [ ] **Step 12: Commit the fixture and the smoke test**
 
 ```bash
 git add data/snapshots/wfo test/snapshot/wfo-nested-ref.test.ts
@@ -1119,6 +1272,6 @@ git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nest
 
 ## Self-review notes
 
-- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-7. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); read-only pull with `--parquet-root` and inclusive-`--to` adjustment (Task 7); image inverse gate with real byte delta + nested-ref smoke (Task 7); `_raw` gitignored and committed before the pull (Task 7); stop conditions (Task 7 ⛔). All present.
-- **Delivery order:** Tasks 1-3 (validator) precede Task 7 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-6 are pure code and can be built and reviewed without VPS access; only Task 7 needs credentials.
+- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-7. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` (Task 7); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 7); `_raw` gitignored (editor, committed first) (Task 7); stop conditions (Task 7 ⛔). All present.
+- **Delivery order:** Tasks 1-3 (validator) precede Task 7 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-6 are pure code, buildable/reviewable without VPS; only Task 7 needs credentials.
 - **Execution split:** Tasks 1-6 are TDD, no credentials needed. Task 7 is inline with credentials and stop-conditions.
