@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "fixture-coverage.1",
+  "period": {
+    "fromMs": 1780963200000,
+    "toMs": 1784592000000
+  },
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "HUSDT",
+    "HYPEUSDT",
+    "SOLUSDT"
+  ],
+  "totalGapBudgetMinutes": 6480,
+  "maxConsecutiveGapMinutes": 1440
+}

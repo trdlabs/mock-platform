@@ -1,0 +1,94 @@
+{
+  "note": "rows filtered to the intersection of the 5 source series",
+  "rawSourceRef": "data/snapshots/_raw/wfo",
+  "rawSourceBundleSha256": "63a86eef2639f454115f9926f49cefa462a980a2118c016d13924ee1109ac02e",
+  "window": {
+    "fromMs": 1780963200000,
+    "toMs": 1784592000000
+  },
+  "commonGridSize": 59893,
+  "rankingTieBreak": "top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC",
+  "ranking": {
+    "probeWindow": {
+      "fromMs": 1780272000000,
+      "toMs": 1784592000000
+    },
+    "turnoverSha256": "b410107966aafba2ac423e6f9994f2d93bb32b1a2fedf6a2721fa5f478d1d2b5",
+    "candidateCount": 610,
+    "primary": "HUSDT",
+    "selected": [
+      {
+        "symbol": "HUSDT",
+        "rank": 0,
+        "turnover": 3025187621.1858144
+      },
+      {
+        "symbol": "BTCUSDT",
+        "rank": 1,
+        "turnover": 247181638433.74722
+      },
+      {
+        "symbol": "ETHUSDT",
+        "rank": 2,
+        "turnover": 118206042322.5761
+      },
+      {
+        "symbol": "SOLUSDT",
+        "rank": 3,
+        "turnover": 35611964868.4388
+      },
+      {
+        "symbol": "HYPEUSDT",
+        "rank": 4,
+        "turnover": 17632392569.621483
+      }
+    ]
+  },
+  "dedupe": {
+    "exactDuplicatesCollapsed": 0,
+    "derivedMetricConflictsResolved": 20,
+    "policy": "last writer wins on derived metrics (OI/funding/taker flows/schema_version); a price-field disagreement is fatal"
+  },
+  "perSymbol": {
+    "HUSDT": {
+      "rawRowsInProbeWindow": 70820,
+      "rowsInSelectedWindowBeforeIntersection": 59894,
+      "missingMinutesInSelectedWindow": 586,
+      "droppedOutsideSelectedWindow": 10926,
+      "finalRowsAfterIntersection": 59893,
+      "droppedByIntersection": 1
+    },
+    "BTCUSDT": {
+      "rawRowsInProbeWindow": 70819,
+      "rowsInSelectedWindowBeforeIntersection": 59893,
+      "missingMinutesInSelectedWindow": 587,
+      "droppedOutsideSelectedWindow": 10926,
+      "finalRowsAfterIntersection": 59893,
+      "droppedByIntersection": 0
+    },
+    "ETHUSDT": {
+      "rawRowsInProbeWindow": 70822,
+      "rowsInSelectedWindowBeforeIntersection": 59896,
+      "missingMinutesInSelectedWindow": 584,
+      "droppedOutsideSelectedWindow": 10926,
+      "finalRowsAfterIntersection": 59893,
+      "droppedByIntersection": 3
+    },
+    "SOLUSDT": {
+      "rawRowsInProbeWindow": 70823,
+      "rowsInSelectedWindowBeforeIntersection": 59897,
+      "missingMinutesInSelectedWindow": 583,
+      "droppedOutsideSelectedWindow": 10926,
+      "finalRowsAfterIntersection": 59893,
+      "droppedByIntersection": 4
+    },
+    "HYPEUSDT": {
+      "rawRowsInProbeWindow": 70820,
+      "rowsInSelectedWindowBeforeIntersection": 59894,
+      "missingMinutesInSelectedWindow": 586,
+      "droppedOutsideSelectedWindow": 10926,
+      "finalRowsAfterIntersection": 59893,
+      "droppedByIntersection": 1
+    }
+  }
+}

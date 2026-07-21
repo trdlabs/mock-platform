@@ -1,0 +1,15 @@
+{
+  "ref": "2026-06-09-to-2026-07-20-vps-wfo42d",
+  "createdAtMs": 1784657109525,
+  "versions": {
+    "snapshotSchemaVersion": "snapshot.1",
+    "opsReadContractVersion": "ops.6",
+    "researchReadContractVersion": "research.1",
+    "analysisContractVersion": "ops.4",
+    "exporterVersion": "wfo-fixture.1",
+    "sourcePlatformCommit": "vps-fetch-2026-07-21T1609Z",
+    "redactionPolicyVersion": "redact.1"
+  },
+  "bundleRef": "ops/bundle.json.gz",
+  "checksumsRef": "checksums.json"
+}
