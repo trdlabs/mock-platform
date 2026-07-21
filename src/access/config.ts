@@ -10,6 +10,12 @@ export interface MockConfig {
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 
+/** The code-default snapshot the mock falls back to when MOCK_SNAPSHOT_REF is unset: the T1
+ *  native-1m SSOT fixture. Exported so every entry point shares ONE literal — a second hardcoded
+ *  copy is how the research gateway silently kept serving the 2024-era bars-only synthetic fixture. */
+export const DEFAULT_SNAPSHOT_DIR = './data/snapshots';
+export const DEFAULT_SNAPSHOT_REF = 'fixtures/2026-06-22-to-2026-06-28-vps';
+
 export function loadMockConfig(env: Record<string, string | undefined>): MockConfig {
   const bind = env.MOCK_OPS_BIND ?? '127.0.0.1';
   const port = Number(env.MOCK_OPS_PORT ?? '8839');
@@ -30,8 +36,8 @@ export function loadMockConfig(env: Record<string, string | undefined>): MockCon
 
   return {
     port, bind, tokenAllowlist,
-    snapshotDir: env.MOCK_SNAPSHOT_DIR ?? './data/snapshots',
-    snapshotRef: env.MOCK_SNAPSHOT_REF ?? 'fixtures/2026-06-22-to-2026-06-28-vps',
+    snapshotDir: env.MOCK_SNAPSHOT_DIR ?? DEFAULT_SNAPSHOT_DIR,
+    snapshotRef: env.MOCK_SNAPSHOT_REF ?? DEFAULT_SNAPSHOT_REF,
     replayMode, replaySpeed,
   };
 }
