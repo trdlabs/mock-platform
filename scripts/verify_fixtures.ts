@@ -88,9 +88,19 @@ const TF_MS: Readonly<Record<string, number>> = {
 };
 
 /** The derived surfaces of a historical block — everything that is NOT `rowsBySymbol`. */
+/** Timeframes every declared symbol must carry. Absence is a failure, not a pass: the surfaces are
+ *  derived from the rows, so a fixture with rows but no bars is malformed, and treating "no bars"
+ *  as "nothing to disagree with" would let the whole check be skipped by deleting data. */
+const REQUIRED_TIMEFRAMES = ['1h', '1d'] as const;
+
+const OHLCV = ['open', 'high', 'low', 'close', 'volume'] as const;
+
+export interface OhlcvRow { minute_ts: number; open?: number; high?: number; low?: number; close?: number; volume?: number }
+export interface OhlcvBar { tsMs: number; open?: number; high?: number; low?: number; close?: number; volume?: number }
+
 export interface HistoricalBlock {
-  rowsBySymbol?: Record<string, ReadonlyArray<{ minute_ts: number; volume?: number }>>;
-  barsBySymbolAndTimeframe?: Record<string, Record<string, ReadonlyArray<{ tsMs: number; volume?: number }>>>;
+  rowsBySymbol?: Record<string, ReadonlyArray<OhlcvRow>>;
+  barsBySymbolAndTimeframe?: Record<string, Record<string, ReadonlyArray<OhlcvBar>>>;
   fundingBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
   openInterestBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
   liquidationsBySymbol?: Record<string, ReadonlyArray<{ tsMs: number }>>;
@@ -132,32 +142,60 @@ export function checkDerivedSurfaces(coverage: CoverageDoc, historical: Historic
   }
 
   const rows = historical.rowsBySymbol ?? {};
-  for (const [symbol, tfs] of Object.entries(historical.barsBySymbolAndTimeframe ?? {})) {
-    if (!declared.has(symbol)) {
-      errs.push(`barsBySymbolAndTimeframe: undeclared symbol ${symbol}`);
+  const barsBySymbol = historical.barsBySymbolAndTimeframe ?? {};
+
+  for (const symbol of Object.keys(barsBySymbol)) {
+    if (!declared.has(symbol)) errs.push(`barsBySymbolAndTimeframe: undeclared symbol ${symbol}`);
+  }
+
+  // Driven by the DECLARED symbols and the REQUIRED timeframes, not by whatever the bundle happens
+  // to contain — otherwise deleting a symbol, a timeframe, or the whole surface would pass silently.
+  for (const symbol of coverage.symbols) {
+    const shipped = rows[symbol] ?? [];
+    const tfs = barsBySymbol[symbol];
+    if (tfs === undefined) {
+      errs.push(`barsBySymbolAndTimeframe: missing bars for declared symbol ${symbol}`);
       continue;
     }
-    const shipped = rows[symbol] ?? [];
-    for (const [tf, bars] of Object.entries(tfs)) {
-      const tfMs = TF_MS[tf];
-      if (tfMs === undefined) { errs.push(`barsBySymbolAndTimeframe[${symbol}]: unknown timeframe ${tf}`); continue; }
-      if (bars.length && shipped.some((r) => !Number.isFinite(r.volume))) {
-        errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: rows carry no numeric volume, bars cannot be verified`);
+    for (const tf of REQUIRED_TIMEFRAMES) {
+      const bars = tfs[tf];
+      if (bars === undefined) {
+        errs.push(`barsBySymbolAndTimeframe[${symbol}]: missing required timeframe ${tf}`);
         continue;
       }
-      const expected = new Map<number, number>();
-      for (const r of shipped) {
-        const b = Math.floor(r.minute_ts / tfMs) * tfMs;
-        expected.set(b, (expected.get(b) ?? 0) + (r.volume as number));
+      const tfMs = TF_MS[tf]!;
+      if (shipped.some((r) => OHLCV.some((f) => !Number.isFinite(r[f])))) {
+        errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: rows carry no numeric OHLCV, bars cannot be verified`);
+        continue;
       }
+
+      // Rebuild each bucket the same way the authoring tool does: open of the first minute, close of
+      // the last, extremes across the bucket, volume summed. Comparing volume alone let a bar keep
+      // wrong prices as long as the sizes happened to add up.
+      const expected = new Map<number, { open: number; high: number; low: number; close: number; volume: number }>();
+      for (const r of [...shipped].sort((a, b) => a.minute_ts - b.minute_ts)) {
+        const b = Math.floor(r.minute_ts / tfMs) * tfMs;
+        const acc = expected.get(b);
+        if (!acc) expected.set(b, { open: r.open!, high: r.high!, low: r.low!, close: r.close!, volume: r.volume! });
+        else {
+          acc.high = Math.max(acc.high, r.high!);
+          acc.low = Math.min(acc.low, r.low!);
+          acc.close = r.close!;
+          acc.volume += r.volume!;
+        }
+      }
+
       for (const bar of bars) {
         const want = expected.get(bar.tsMs);
         if (want === undefined) {
           errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar ${bar.tsMs} has no shipped rows in its bucket`);
           continue;
         }
-        if (!Number.isFinite(bar.volume) || Math.abs((bar.volume as number) - want) > 1e-6) {
-          errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar ${bar.tsMs} volume ${bar.volume} != row sum ${want}`);
+        for (const f of OHLCV) {
+          const got = bar[f];
+          if (!Number.isFinite(got) || Math.abs((got as number) - want[f]) > 1e-6) {
+            errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar ${bar.tsMs} ${f} ${got} != rows' ${want[f]}`);
+          }
         }
       }
       const missing = [...expected.keys()].filter((b) => !bars.some((x) => x.tsMs === b));
@@ -169,11 +207,11 @@ export function checkDerivedSurfaces(coverage: CoverageDoc, historical: Historic
   return errs;
 }
 
-/** Declared (coverage) vs actual (the whole historical block). Returns [] when the fixture passes.
+/** Declared (coverage) vs actual, restricted to `rowsBySymbol`. Returns [] when the rows pass.
  *  Symbol-set equality is exact over ALL keys (an extra empty key fails), then each declared
  *  symbol is checked non-empty — so `{ X: [] }` can never slip through. */
-export function checkFixture(coverage: CoverageDoc, historical: HistoricalBlock | undefined): string[] {
-  const rows = historical?.rowsBySymbol ?? {};
+export function checkRows(coverage: CoverageDoc, rowsBySymbol: Record<string, ReadonlyArray<OhlcvRow>> | undefined): string[] {
+  const rows = rowsBySymbol ?? {};
   const { fromMs, toMs } = coverage.period;
 
   const keys = Object.keys(rows).sort();
@@ -204,10 +242,16 @@ export function checkFixture(coverage: CoverageDoc, historical: HistoricalBlock 
   if (tg > coverage.totalGapBudgetMinutes) errs.push(`total gap ${tg} > budget ${coverage.totalGapBudgetMinutes}`);
   const mcg = maxConsecutiveGap(grid, fromMs, toMs);
   if (mcg > coverage.maxConsecutiveGapMinutes) errs.push(`max consecutive gap ${mcg} > budget ${coverage.maxConsecutiveGapMinutes}`);
-
-  // The rows are sound; now hold the surfaces derived from them to the same window and the same data.
-  errs.push(...checkDerivedSurfaces(coverage, historical ?? {}));
   return errs;
+}
+
+/** The full artifact gate: the rows, and every surface derived from them. */
+export function checkFixture(coverage: CoverageDoc, historical: HistoricalBlock | undefined): string[] {
+  const rowErrs = checkRows(coverage, historical?.rowsBySymbol);
+  // Only worth interrogating the derived surfaces once the rows they must agree with are sound;
+  // otherwise every bar would be reported as disagreeing with rows we already rejected.
+  if (rowErrs.length) return rowErrs;
+  return checkDerivedSurfaces(coverage, historical ?? {});
 }
 
 /** Coverage policy is per root, not global.

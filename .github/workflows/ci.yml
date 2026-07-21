@@ -62,11 +62,10 @@ jobs:
       # The committed WFO fixture is tens of MB and must never be baked into the image — only
       # data/snapshots/fixtures is. Building alone proved nothing here, so assert it: a COPY-scope
       # or .dockerignore change that ships it now fails CI instead of silently inflating the image.
+      # Asserted directly rather than via `if docker run ...`, which would have been fail-open: a
+      # container that failed to start for any other reason reads as "the path isn't there" and the
+      # gate passes. Here the exit code IS the assertion, so a broken run fails the job too.
       - name: assert the WFO fixture is absent from the image
         run: |
-          if docker run --rm --entrypoint sh trading-mock-platform:ci -c 'test -e /app/data/snapshots/wfo'; then
-            echo "::error::/app/data/snapshots/wfo is present in the image — check Dockerfile COPY scope and .dockerignore"
-            docker run --rm --entrypoint sh trading-mock-platform:ci -c 'ls -la /app/data/snapshots'
-            exit 1
-          fi
-          echo "OK: /app/data/snapshots/wfo absent"
+          docker run --rm --entrypoint sh trading-mock-platform:ci \
+            -c 'test ! -e /app/data/snapshots/wfo'

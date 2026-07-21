@@ -37,7 +37,8 @@ describe('validateCoverageDoc', () => {
 });
 
 // append to test/scripts/verify-fixtures.test.ts
-import { checkFixture, totalGap, maxConsecutiveGap } from '../../scripts/verify_fixtures.js';
+import { checkFixture, checkRows, totalGap, maxConsecutiveGap } from '../../scripts/verify_fixtures.js';
+import { deriveHistoricalSurfaces } from '../../scripts/make-wfo-fixture.js';
 
 const M = 60_000;
 const from = M;                 // 60_000
@@ -68,7 +69,7 @@ describe('checkFixture', () => {
   // These cases exercise the row-level rules, so they pass rows alone; checkFixture now takes the
   // whole historical block.
   const chk = (c: typeof cov, rows: Record<string, Array<{ minute_ts: number }>> | undefined) =>
-    checkFixture(c, rows === undefined ? undefined : { rowsBySymbol: rows });
+    checkRows(c, rows);
   it('passes a full unified grid within budget', () => {
     expect(chk(cov, full())).toEqual([]);
   });
@@ -132,10 +133,20 @@ describe('checkFixture', () => {
 
 describe('checkDerivedSurfaces (the whole historical block, not just rows)', () => {
   const rowsWithVolume = () =>
-    Object.fromEntries(cov.symbols.map((s) => [s, gridArr().map((t) => ({ minute_ts: t, volume: 2 }))]));
-  /** Bars that genuinely agree with the rows above: one bucket, volume = 2 per minute. */
-  const goodBars = () =>
-    Object.fromEntries(cov.symbols.map((s) => [s, { '1h': [{ tsMs: Math.floor(from / 3_600_000) * 3_600_000, volume: 2 * gridArr().length }] }]));
+    Object.fromEntries(cov.symbols.map((s) => [
+      s, gridArr().map((t, i) => ({ minute_ts: t, open: 10 + i, high: 20 + i, low: 5 + i, close: 15 + i, volume: 2 })),
+    ]));
+  /** Bars that genuinely agree with the rows above: one bucket per timeframe, full OHLCV. */
+  const goodBars = () => {
+    const g = gridArr();
+    const bar = (tsMs: number) => ({
+      tsMs, open: 10, high: 20 + (g.length - 1), low: 5, close: 15 + (g.length - 1), volume: 2 * g.length,
+    });
+    return Object.fromEntries(cov.symbols.map((s) => [s, {
+      '1h': [bar(Math.floor(from / 3_600_000) * 3_600_000)],
+      '1d': [bar(Math.floor(from / 86_400_000) * 86_400_000)],
+    }]));
+  };
 
   it('passes when every derived surface agrees with the shipped rows', () => {
     expect(checkFixture(cov, {
@@ -155,13 +166,46 @@ describe('checkDerivedSurfaces (the whole historical block, not just rows)', () 
     expect(errs.some((e) => e.includes('openInterestBySymbol') && e.includes('outside window'))).toBe(true);
   });
 
+  it('FAILS when barsBySymbolAndTimeframe is absent entirely', () => {
+    // Deleting the surface must not be a way to have nothing to disagree with.
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume() });
+    expect(errs.some((e) => e.includes('missing bars for declared symbol'))).toBe(true);
+  });
+
+  it('FAILS when one declared symbol has no bars', () => {
+    const bars = goodBars(); delete (bars as Record<string, unknown>).C;
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('missing bars for declared symbol C'))).toBe(true);
+  });
+
+  it('FAILS when a required timeframe is missing', () => {
+    const bars = goodBars(); delete (bars.B as unknown as Record<string, unknown>)['1d'];
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[B]') && e.includes('missing required timeframe 1d'))).toBe(true);
+  });
+
+  it('FAILS a bar whose OHLC is wrong even though its volume is right', () => {
+    // Comparing volume alone let a bar carry wrong prices as long as the sizes still added up.
+    const bars = goodBars();
+    bars.A!['1h']![0]!.high = 999; // volume untouched
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[A][1h]') && e.includes('high 999'))).toBe(true);
+  });
+
+  it('FAILS a bar whose open is taken from the wrong minute', () => {
+    const bars = goodBars();
+    bars.A!['1d']![0]!.open = 11; // the second minute's open, not the bucket's first
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('[A][1d]') && e.includes('open 11'))).toBe(true);
+  });
+
   it('FAILS a 1h bar whose volume does not equal the sum of the rows shipped for it', () => {
     // The other real defect: bars aggregated before duplicates were collapsed, so a re-written
     // minute was counted twice into its bucket.
     const bars = goodBars();
     bars.A!['1h']![0]!.volume += 2; // one extra minute's worth, as a double-count would produce
     const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
-    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[A][1h]') && e.includes('!= row sum'))).toBe(true);
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[A][1h]') && e.includes('volume') && e.includes("!= rows'"))).toBe(true);
   });
 
   it('FAILS a bar bucket that has no shipped rows left, and a bucket with rows but no bar', () => {
@@ -244,7 +288,11 @@ describe('runFixtureVerification: enforced fixture, end-to-end', () => {
     const rowsBySymbol = Object.fromEntries(
       SYMBOLS.map((s) => [s, template.map((r) => ({ ...r, symbol: s }))]),
     );
-    const bundleStr = JSON.stringify({ ...golden, historical: { ...golden.historical, rowsBySymbol } });
+    // The golden's own bars/funding/OI/liquidations belong to ITS symbols and span ITS window, so
+    // re-keying only the rows would leave the fixture self-inconsistent — which the gate now (
+    // correctly) rejects. Derive every surface from the rows this fixture actually ships.
+    const historical = { ...golden.historical, ...deriveHistoricalSurfaces(rowsBySymbol as never), rowsBySymbol };
+    const bundleStr = JSON.stringify({ ...golden, historical });
 
     const baseDir = mkdtempSync(join(tmpdir(), 'vf-e2e-'));
     const dir = join(baseDir, 'data/snapshots/wfo/e2e-enforced');

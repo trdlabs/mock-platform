@@ -42,9 +42,10 @@ const DERIVED_FIELDS = [
  *  for — as does one that disagrees on any field belonging to neither list, so that a future column
  *  cannot be waved through as "derived" by default.
  *
- *  Rows are sorted by minute_ts on the way out: `readParquetDir` iterates date directories in
- *  filesystem order, so without this the fixture bytes would depend on the machine that built them
- *  and would not honour the contract's (minute_ts ASC) ordering. */
+ *  Rows are sorted by minute_ts on the way out. `readParquetDir` now walks its partitions in a fully
+ *  sorted order, but it groups by schema_version first, so rows for one symbol still arrive
+ *  interleaved across schema versions rather than in minute order — and the contract requires
+ *  (minute_ts ASC). Sorting here also keeps the output independent of that grouping. */
 export function dedupeRowsBySymbol<R extends { minute_ts: number }>(
   rowsBySymbol: Record<string, R[]>,
 ): { rows: Record<string, R[]>; collapsed: number; resolved: number } {
