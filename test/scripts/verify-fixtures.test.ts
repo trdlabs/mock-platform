@@ -143,6 +143,16 @@ describe('runFixtureVerification', () => {
     writeFileSync(join(fx, 'coverage.json'), JSON.stringify({ schemaVersion: 'fixture-coverage.1' }));
     expect(runFixtureVerification(d)).toBe(1);
   });
+  it('FAILS a wfo fixture with no coverage.json — deleting the sidecar must not go green', () => {
+    const d = mkdtempSync(join(tmpdir(), 'vf-'));
+    mkdirSync(join(d, 'data/snapshots/wfo/no-sidecar'), { recursive: true });
+    expect(runFixtureVerification(d)).toBe(1);
+  });
+  it('still only WARNs for a legacy fixtures/ dir with no coverage.json', () => {
+    const d = mkdtempSync(join(tmpdir(), 'vf-'));
+    mkdirSync(join(d, 'data/snapshots/fixtures/legacy'), { recursive: true });
+    expect(runFixtureVerification(d)).toBe(0);
+  });
   it('returns 1 for a non-JSON sidecar without throwing', () => {
     const d = mkdtempSync(join(tmpdir(), 'vf-'));
     const fx = join(d, 'data/snapshots/wfo/bad2');

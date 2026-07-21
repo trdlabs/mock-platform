@@ -124,7 +124,14 @@ export function checkFixture(
   return errs;
 }
 
-const SCAN_ROOTS = ['data/snapshots/fixtures', 'data/snapshots/wfo'];
+/** Coverage policy is per root, not global.
+ *  - `fixtures/**` predates the sidecar, so a missing coverage.json there is a legacy WARN.
+ *  - `wfo/**` exists only for coverage-declaring tiers, so a missing sidecar there is a FAIL:
+ *    otherwise deleting coverage.json would silently turn this gate green. */
+const SCAN_ROOTS: ReadonlyArray<{ root: string; coverageRequired: boolean }> = [
+  { root: 'data/snapshots/fixtures', coverageRequired: false },
+  { root: 'data/snapshots/wfo', coverageRequired: true },
+];
 
 function fixtureDirs(root: string): string[] {
   if (!existsSync(root)) return [];
@@ -135,10 +142,18 @@ function fixtureDirs(root: string): string[] {
 export function runFixtureVerification(baseDir: string): number {
   let failed = 0;
   let enforced = 0;
-  for (const root of SCAN_ROOTS) {
+  for (const { root, coverageRequired } of SCAN_ROOTS) {
     for (const dir of fixtureDirs(join(baseDir, root))) {
       const coveragePath = join(dir, 'coverage.json');
-      if (!existsSync(coveragePath)) { console.log(`WARN  ${dir} — legacy (no declared coverage)`); continue; }
+      if (!existsSync(coveragePath)) {
+        if (coverageRequired) {
+          console.error(`FAIL  ${dir}\n  - coverage.json is required under ${root} (declared-coverage tier)`);
+          failed++;
+        } else {
+          console.log(`WARN  ${dir} — legacy (no declared coverage)`);
+        }
+        continue;
+      }
       enforced++;
 
       let doc: unknown;
