@@ -1011,32 +1011,82 @@ git commit -m "feat(fixtures): wfo-select (rank/window) + wfo-rank + wfo-probe C
 
 ---
 
-### Task 7: Parquet ranking/build tools (one visit), then fetch → produce → validate → commit T2
+### Task 7: Parquet tools (`wfo-turnover`, `wfo-build-raw`) — TDD
 
-The pull is **one read-only VPS visit** (ops + rsync of all parquet); ranking and the 5-symbol raw snapshot are then built **locally** from the cached parquet, so no 50-day all-symbol JSON bundle is ever materialised. The two parquet tools live under `tools/fetch-snapshot/` (its own isolated deps: `hyparquet`); they reuse the existing reader and never import from `src/contract`. The rest is a runbook — **stop and report a blocker** at any ⛔.
+These two tools ranking-aggregate and locally-build the 5-symbol raw snapshot from cached parquet, so the VPS pull stays **one read-only visit** and no 50-day all-symbol JSON bundle is materialised. They live under `tools/fetch-snapshot/` — a **separate package** with its own `package.json`/deps (`pg`, `hyparquet`). **Honest boundary:** the tools freely import mock `src/` (types and helpers) — `fetch-snapshot.ts` already imports `src/snapshot/bundle-io.js` and `src/contract/ops-read/close-reason.js`; the isolation is only that the tool's npm deps never reach the root `pnpm-lock.yaml` (so `verify:no-forbidden-deps` stays clean). `SnapshotManifest` is mock-platform's own fixture-format contract, so a type-only import of it is correct (do not duplicate the type).
+
+Each tool's decision logic is a **pure exported function** (unit-tested in the tool's own vitest); the parquet read / snapshot write are thin I/O shells that reuse `fetch-snapshot`'s proven `hyparquet` call and are not unit-tested (matching this repo's convention — `fetch-snapshot`'s own reader has no unit test). Heavy/parquet imports are **dynamic inside `main()`**, so importing a tool for its pure function never loads `pg`/`hyparquet`.
 
 **Files:**
 - Modify: `tools/fetch-snapshot/fetch-snapshot.ts` (export `readParquetDir`)
-- Create: `tools/fetch-snapshot/wfo-turnover.ts`
-- Create: `tools/fetch-snapshot/wfo-build-raw.ts`
-- Modify: `.gitignore` (add `data/snapshots/_raw/`)
-- Create (generated): `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/`
-- Test: `test/snapshot/wfo-nested-ref.test.ts`
+- Create: `tools/fetch-snapshot/wfo-turnover.ts`, `tools/fetch-snapshot/wfo-build-raw.ts`
+- Modify: `tools/fetch-snapshot/tsconfig.json` (include the new files + tests)
+- Test: `tools/fetch-snapshot/wfo-tools.test.ts`
+- Modify: `.github/workflows/ci.yml` (a `fetch-tools` job: install the tool's deps, typecheck + test)
 
-**Prerequisites:** `.env.rollout.local` with VPS credentials + parquet root (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
+**Interfaces:**
+- Produces:
+  - `aggregateTurnover(rows: Iterable<{ symbol: string; close: number; volume: number; minute_ts: number }>, fromMs: number, toMs: number): Record<string, number>`
+  - `assembleRawBundle<H>(base: Record<string, unknown>, historical: H): Record<string, unknown>`
 
-- [ ] **Step 1: Export `readParquetDir` and add the two parquet tools**
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// tools/fetch-snapshot/wfo-tools.test.ts
+import { describe, it, expect } from 'vitest';
+import { aggregateTurnover } from './wfo-turnover.js';
+import { assembleRawBundle } from './wfo-build-raw.js';
+
+describe('aggregateTurnover', () => {
+  it('sums close*volume per symbol within [from, to), upper-casing symbols', () => {
+    const rows = [
+      { symbol: 'a', close: 2, volume: 3, minute_ts: 60_000 },   // 6  (a→A)
+      { symbol: 'A', close: 1, volume: 1, minute_ts: 120_000 },  // +1
+      { symbol: 'B', close: 5, volume: 2, minute_ts: 0 },        // below from → excluded
+      { symbol: 'B', close: 4, volume: 1, minute_ts: 180_000 },  // == to → excluded (half-open)
+    ];
+    expect(aggregateTurnover(rows, 60_000, 180_000)).toEqual({ A: 7 });
+  });
+});
+
+describe('assembleRawBundle', () => {
+  it('replaces historical and preserves everything else', () => {
+    const base = { runs: [1], tradesByRun: { r: [] }, historical: { old: true } };
+    expect(assembleRawBundle(base, { fresh: true })).toEqual({ runs: [1], tradesByRun: { r: [] }, historical: { fresh: true } });
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --dir tools/fetch-snapshot install --no-frozen-lockfile` (once, to get the tool's `vitest`), then
+`pnpm --dir tools/fetch-snapshot exec vitest run wfo-tools.test.ts`
+Expected: FAIL — modules not found.
+
+- [ ] **Step 3: Export `readParquetDir` and write the two tools**
 
 In `tools/fetch-snapshot/fetch-snapshot.ts`, change `async function readParquetDir(` to `export async function readParquetDir(` (no other change).
 
 ```ts
 // tools/fetch-snapshot/wfo-turnover.ts
-// Local, read-only column aggregate over cached parquet: turnover = Σ close·volume per symbol,
-// within [from, to). Reads only symbol/close/volume columns. Prints a JSON {SYMBOL: turnover} map.
+// Local, read-only turnover aggregate over cached parquet. Pure core + a thin parquet reader.
 import { existsSync, readdirSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+export interface TurnoverRow { symbol: string; close: number; volume: number; minute_ts: number }
+
+/** turnover = Σ close·volume per symbol within [fromMs, toMs). Pure; testable without parquet. */
+export function aggregateTurnover(rows: Iterable<TurnoverRow>, fromMs: number, toMs: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.minute_ts < fromMs || r.minute_ts >= toMs) continue;
+    const s = r.symbol.trim().toUpperCase();
+    out[s] = (out[s] ?? 0) + r.close * r.volume;
+  }
+  return out;
+}
 
 function arg(name: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -1046,14 +1096,19 @@ function arg(name: string): string {
 
 async function main(): Promise<void> {
   const localRoot = arg('parquet-local');
-  const tsFrom = Number(arg('from'));
-  const tsTo = Number(arg('to'));
+  const fromMs = Number(arg('from'));
+  const toMs = Number(arg('to'));
 
+  // Dynamic imports keep hyparquet out of the module surface unit tests import.
   const { parquetReadObjects } = await import('hyparquet');
   const { compressors } = await import('hyparquet-compressors');
   const { asyncBufferFromFile } = (await import('hyparquet/src/node.js')) as {
     asyncBufferFromFile: (p: string) => Promise<{ byteLength: number; slice(s: number, e?: number): ArrayBuffer | Promise<ArrayBuffer> }>;
   };
+
+  function* readAll(rows: Record<string, unknown>[]): Generator<TurnoverRow> {
+    for (const r of rows) yield { symbol: String(r['symbol']), close: Number(r['close']), volume: Number(r['volume']), minute_ts: Number(r['minute_ts']) };
+  }
 
   const turnover: Record<string, number> = {};
   for (const sv of [1, 2] as const) {
@@ -1066,12 +1121,7 @@ async function main(): Promise<void> {
         if (!f.startsWith('part-') || !f.endsWith('.parquet')) continue;
         const file = await asyncBufferFromFile(join(partDir, f));
         const rows = (await parquetReadObjects({ file, columns: ['minute_ts', 'symbol', 'close', 'volume'], compressors })) as Record<string, unknown>[];
-        for (const r of rows) {
-          const ts = Number(r['minute_ts']);
-          if (ts < tsFrom || ts >= tsTo) continue;
-          const sym = String(r['symbol']).trim().toUpperCase();
-          turnover[sym] = (turnover[sym] ?? 0) + Number(r['close']) * Number(r['volume']);
-        }
+        for (const [s, v] of Object.entries(aggregateTurnover(readAll(rows), fromMs, toMs))) turnover[s] = (turnover[s] ?? 0) + v;
       }
     }
   }
@@ -1083,16 +1133,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 ```ts
 // tools/fetch-snapshot/wfo-build-raw.ts
-// Build a 5-symbol raw snapshot LOCALLY from cached parquet (no VPS): full historical for the 5
-// symbols over the probe window, merged with the ops from the primary-only probe bundle. Reuses
-// the SAME writer primitives the mock loader expects (checksums + gzip).
+// Build a 5-symbol raw snapshot LOCALLY from cached parquet (no VPS): 5-symbol historical merged
+// with the ops from the primary-only probe bundle. Pure merge core + a thin read/write shell.
+// SnapshotManifest is mock-platform's own fixture-format contract — a type-only import is correct.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sha256Hex } from '../../src/snapshot/checksums.js';
 import { bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../../src/snapshot/bundle-io.js';
 import type { SnapshotManifest } from '../../src/contract/snapshot/manifest.js';
-import { readParquetDir } from './fetch-snapshot.js';
+
+/** Replace only the historical block; preserve ops. Pure; testable without parquet. */
+export function assembleRawBundle<H>(base: Record<string, unknown>, historical: H): Record<string, unknown> {
+  return { ...base, historical };
+}
 
 function arg(name: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -1101,19 +1155,19 @@ function arg(name: string): string {
 }
 
 async function main(): Promise<void> {
-  const probe = arg('probe');              // _raw/wfo-probe (ops + primary historical)
-  const out = arg('out');                  // _raw/wfo (5-symbol raw)
+  const { readParquetDir } = await import('./fetch-snapshot.js'); // dynamic: keeps pg/hyparquet out of unit tests
+  const probe = arg('probe');
+  const out = arg('out');
   const parquetLocal = arg('parquet-local');
   const symbols = arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-  const tsFrom = Number(arg('from'));      // probeFrom
-  const tsTo = Number(arg('to'));          // probeTo
+  const tsFrom = Number(arg('from'));
+  const tsTo = Number(arg('to'));
 
   const probeManifest = JSON.parse(readFileSync(join(probe, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
   const base = JSON.parse(decodeBundleFileBytes(readFileSync(join(probe, probeManifest.bundleRef)), probeManifest.bundleRef).toString('utf8')) as Record<string, unknown>;
 
-  const historical = await readParquetDir(parquetLocal, symbols, tsFrom, tsTo); // 5-symbol HistoricalBundle
-  const bundle = { ...base, historical };
-  const bytes = Buffer.from(JSON.stringify(bundle), 'utf8');
+  const historical = await readParquetDir(parquetLocal, symbols, tsFrom, tsTo);
+  const bytes = Buffer.from(JSON.stringify(assembleRawBundle(base, historical)), 'utf8');
   const bundleRef = bundleRefForByteLength(bytes.length);
   const encoded = encodeBundleFileBytes(bytes, bundleRef);
 
@@ -1129,65 +1183,115 @@ async function main(): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
 ```
 
-Run: `pnpm typecheck`
-Expected: PASS.
+- [ ] **Step 4: Extend the tool's tsconfig to typecheck the new files**
 
-```bash
-git add tools/fetch-snapshot/fetch-snapshot.ts tools/fetch-snapshot/wfo-turnover.ts tools/fetch-snapshot/wfo-build-raw.ts
-git commit -m "feat(fetch-snapshot): export readParquetDir; add wfo-turnover + wfo-build-raw parquet tools"
+In `tools/fetch-snapshot/tsconfig.json`, change `"include"` to:
+
+```jsonc
+"include": ["fetch-snapshot.ts", "wfo-turnover.ts", "wfo-build-raw.ts", "*.test.ts"]
 ```
 
-- [ ] **Step 2: Gitignore the raw pull, commit it first**
+- [ ] **Step 5: Run the tool's typecheck + tests**
+
+Run: `pnpm --dir tools/fetch-snapshot typecheck`
+Expected: PASS (all three tool files typecheck).
+Run: `pnpm --dir tools/fetch-snapshot exec vitest run wfo-tools.test.ts`
+Expected: PASS.
+
+- [ ] **Step 6: Wire a CI job for the isolated tool**
+
+In `.github/workflows/ci.yml`, add a job (parallel to `checks`) so the tool is typechecked + tested without polluting the mock lockfile:
+
+```yaml
+  fetch-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - working-directory: tools/fetch-snapshot
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm typecheck
+          pnpm exec vitest run
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tools/fetch-snapshot/fetch-snapshot.ts tools/fetch-snapshot/wfo-turnover.ts tools/fetch-snapshot/wfo-build-raw.ts tools/fetch-snapshot/wfo-tools.test.ts tools/fetch-snapshot/tsconfig.json .github/workflows/ci.yml
+git commit -m "feat(fetch-snapshot): wfo-turnover + wfo-build-raw (pure cores TDD, tsconfig + CI job)"
+```
+
+---
+
+### Task 8: Fetch, produce, validate, and commit the T2 fixture (item 1, data) + smoke + Docker gate
+
+A **runbook**, not TDD — one read-only VPS visit, everything else local. **Stop and report a blocker** at any ⛔.
+
+**Files:**
+- Modify: `.gitignore` (add `data/snapshots/_raw/`)
+- Create (generated): `data/snapshots/wfo/<from>-to-<to>-vps-wfo42d/`
+- Test: `test/snapshot/wfo-nested-ref.test.ts`
+
+**Prerequisites:** `.env.rollout.local` with VPS credentials + parquet root (see `control-center/docs/operations/rollout-secrets.md`). If absent → ⛔ blocker.
+
+- [ ] **Step 1: Gitignore the raw pull, commit it first**
 
 Add the line `data/snapshots/_raw/` to `.gitignore` **with your editor** (not `echo >>`, which can corrupt a no-trailing-newline file), then:
 
 ```bash
-git add .gitignore
-git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
+git add .gitignore && git commit -m "chore: gitignore data/snapshots/_raw (transient VPS pulls)"
 ```
 
-- [ ] **Step 3: Fix the probe window (UTC)**
+- [ ] **Step 2: Unique temp paths + probe window**
 
-Compute `probeTo = start_of(latest_complete_UTC_day + 1)` (ms) and `probeFrom = probeTo − 50·86_400_000`. Record both integers — every later step reuses them.
+```bash
+export PARQUET_CACHE="$(mktemp -d)"   # unique per session — safe under parallel sessions
+export TURNOVER="$(mktemp)"
+# probeTo = start_of(latest_complete_UTC_day + 1) ms; probeFrom = probeTo − 50·86_400_000
+```
 
-- [ ] **Step 4: One read-only VPS visit (ops + rsync of all parquet)**
+Both temp paths are removed in Step 10. Record `probeFrom` / `probeTo` (ms).
 
-`fetch-snapshot`'s `rsync` downloads **all** symbols' parquet for the dates regardless of `--symbols`, so a primary-only run caches everything while materialising only a tiny bundle. `--to` is **inclusive of the whole day**, so pass `probeTo − 1 day` to cover `[probeFrom, probeTo)`. `--parquet-root` is **required** or historical is null. Note the local parquet cache path (`--parquet-local`, default `/tmp/mock-parquet`).
+- [ ] **Step 3: One read-only VPS visit (ops + rsync of all parquet)**
+
+`rsync` downloads **all** symbols' parquet for the dates regardless of `--symbols`, so a primary-only run caches everything into `$PARQUET_CACHE` while materialising only a tiny bundle. `--to` is **inclusive of the whole day**, so pass `probeTo − 1 day`. `--parquet-root` is **required** or historical is null.
 
 ```bash
 pnpm fetch:snapshot -- \
   --db-url "$ROLLOUT_DB_URL" --vps "$ROLLOUT_VPS" \
-  --parquet-root "$ROLLOUT_PARQUET_ROOT" --parquet-local /tmp/mock-parquet \
-  --from <probeFrom UTC date YYYY-MM-DD> \
-  --to   <(probeTo − 1 day) UTC date YYYY-MM-DD> \
-  --symbols HUSDT \
-  --ref  _raw/wfo-probe --mode replace
+  --parquet-root "$ROLLOUT_PARQUET_ROOT" --parquet-local "$PARQUET_CACHE" \
+  --from <probeFrom UTC date YYYY-MM-DD> --to <(probeTo − 1 day) UTC date YYYY-MM-DD> \
+  --symbols HUSDT --ref _raw/wfo-probe --mode replace
 ```
 
 If rsync brings no parquet or ops fails → ⛔ blocker.
 
-- [ ] **Step 5: Rank (local parquet aggregate) → 5 symbols**
+- [ ] **Step 4: Rank (local parquet aggregate) → 5 symbols**
 
 ```bash
-pnpm tsx tools/fetch-snapshot/wfo-turnover.ts -- \
-  --parquet-local /tmp/mock-parquet --from <probeFrom ms> --to <probeTo ms> > /tmp/wfo-turnover.json
-
-SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- --turnover /tmp/wfo-turnover.json --primary HUSDT --count 4)
+pnpm tsx tools/fetch-snapshot/wfo-turnover.ts -- --parquet-local "$PARQUET_CACHE" --from <probeFrom ms> --to <probeTo ms> > "$TURNOVER"
+SYMBOLS=$(pnpm -s tsx scripts/wfo-rank.ts -- --turnover "$TURNOVER" --primary HUSDT --count 4)
 echo "$SYMBOLS"   # e.g. HUSDT,AUSDT,BUSDT,CUSDT,DUSDT
 ```
 
-A non-zero exit / empty turnover map → ⛔ blocker (no proxy fallback).
+Non-zero exit / empty turnover → ⛔ blocker (no proxy fallback).
 
-- [ ] **Step 6: Build the 5-symbol raw snapshot locally (no second visit)**
+- [ ] **Step 5: Build the 5-symbol raw snapshot locally (no second visit)**
 
 ```bash
 pnpm tsx tools/fetch-snapshot/wfo-build-raw.ts -- \
   --probe data/snapshots/_raw/wfo-probe --out data/snapshots/_raw/wfo \
-  --parquet-local /tmp/mock-parquet --symbols "$SYMBOLS" \
+  --parquet-local "$PARQUET_CACHE" --symbols "$SYMBOLS" \
   --from <probeFrom ms> --to <probeTo ms>
 ```
 
-- [ ] **Step 7: Select the 42-day window (offline, tested code)**
+- [ ] **Step 6: Select the 42-day window (offline, tested code)**
 
 ```bash
 pnpm tsx scripts/wfo-probe.ts -- \
@@ -1198,7 +1302,7 @@ pnpm tsx scripts/wfo-probe.ts -- \
 
 Prints `from=<ms>` / `to=<ms>`. Non-zero exit = ⛔ blocker (no window fits the frozen budgets). Do **not** tune budgets or substitute synthetic data.
 
-- [ ] **Step 8: Produce the aligned committed fixture**
+- [ ] **Step 7: Produce the aligned committed fixture, validate, then commit**
 
 ```bash
 pnpm tsx scripts/make-wfo-fixture.ts -- \
@@ -1208,8 +1312,6 @@ pnpm tsx scripts/make-wfo-fixture.ts -- \
   --total-gap-budget 6480 --max-consecutive-gap 1440
 ```
 
-- [ ] **Step 9: Validate in enforce mode — green before committing**
-
 Run: `pnpm verify:fixtures`
 Expected: `OK    data/snapshots/wfo/<ref>` and `verify_fixtures: OK (1 enforced, legacy warned)`.
 Run: `pnpm check:ci`
@@ -1217,7 +1319,7 @@ Expected: exit 0.
 
 If `verify:fixtures` FAILs, do **not** commit — `provenance.json` tells you whether the shortfall is genuine VPS absence (`missingMinutesInSelectedWindow`) or grid alignment (`droppedByIntersection`), as distinct from the expected probe surplus (`droppedOutsideSelectedWindow`).
 
-- [ ] **Step 10: Write and run the nested-ref smoke test**
+- [ ] **Step 8: Write and run the nested-ref smoke test**
 
 ```ts
 // test/snapshot/wfo-nested-ref.test.ts
@@ -1239,10 +1341,9 @@ describe('nested wfo ref', () => {
 Run: `pnpm vitest run test/snapshot/wfo-nested-ref.test.ts`
 Expected: PASS.
 
-- [ ] **Step 11: Docker inverse gate — real byte sizes, isolation-safe worktree**
+- [ ] **Step 9: Docker inverse gate — real byte sizes, isolation-safe worktree**
 
 ```bash
-# unique baseline worktree; trap removes ONLY the one we created (parallel-session safe)
 BASE_WT="$(mktemp -d)/mp-base"
 trap 'git worktree remove --force "$BASE_WT" 2>/dev/null || true' EXIT
 git worktree add "$BASE_WT" origin/main
@@ -1253,25 +1354,26 @@ BASE=$(docker image inspect -f '{{.Size}}' trading-mock-platform:base)
 WFO=$(docker image inspect -f '{{.Size}}' trading-mock-platform:wfo)
 echo "delta bytes: $((WFO - BASE))"
 
-# 1. the wfo tree is absent from the image
 docker run --rm --entrypoint sh trading-mock-platform:wfo -c 'test ! -e data/snapshots/wfo && echo WFO-ABSENT'
-# 2/3. no T2-sized growth: delta well under the ~20 MB payload (allow 5 MB of build noise)
 test "$((WFO - BASE))" -lt 5000000 && echo SIZE-OK
 ```
 
 Expected: `WFO-ABSENT` and `SIZE-OK`. Either failing means the Dockerfile COPY scope changed → investigate (do not commit).
 
-- [ ] **Step 12: Commit the fixture and the smoke test**
+- [ ] **Step 10: Commit the fixture + smoke, then clean up temp paths**
 
 ```bash
 git add data/snapshots/wfo test/snapshot/wfo-nested-ref.test.ts
 git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nested-ref smoke"
+rm -rf "$PARQUET_CACHE" "$TURNOVER"     # bounded cleanup: only what Step 2 created
 ```
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-7. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` (Task 7); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 7); `_raw` gitignored (editor, committed first) (Task 7); stop conditions (Task 7 ⛔). All present.
-- **Delivery order:** Tasks 1-3 (validator) precede Task 7 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-6 are pure code, buildable/reviewable without VPS; only Task 7 needs credentials.
-- **Execution split:** Tasks 1-6 are TDD, no credentials needed. Task 7 is inline with credentials and stop-conditions.
+- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
+- **Honest boundary:** the `tools/fetch-snapshot` package freely imports mock `src/` (like `fetch-snapshot.ts` already does, including `src/contract`); the only isolation is that its npm deps stay out of the root lockfile.
+- **Parquet coverage note:** the tools' pure cores (`aggregateTurnover`, `assembleRawBundle`) are unit-tested; the parquet read/write shells are not (repo convention — `fetch-snapshot`'s reader is likewise untested). A real-parquet E2E would need `hyparquet-writer` added to the tool's devDeps to generate a fixture — a deliberate follow-up, not blocking.
+- **Delivery order:** Tasks 1-3 (validator) precede Task 8 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-7 are pure code, buildable/reviewable without VPS; only Task 8 needs credentials.
+- **Execution split:** Tasks 1-7 are TDD, no credentials needed. Task 8 is inline with credentials and stop-conditions.
