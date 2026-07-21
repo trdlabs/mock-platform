@@ -81,7 +81,9 @@ interface ClosedTrade {
 interface OpsEvent {
   category: string;
   severity: string | null;
-  runId?: string;
+  /** Required by the snapshot bundle schema. Kept non-optional so omitting it fails the typecheck
+   *  rather than only failing to load — it went unnoticed while every exported run had zero events. */
+  runId: string;
   tradeId?: string | null;
   tsMs: number;
   safeMessage: string;
@@ -480,6 +482,7 @@ async function fetchOps(dbUrl: string, tsFrom: number, tsTo: number): Promise<Op
         eventsByRun[rid]!.push({
           category: e.category,
           severity: e.severity,
+          runId: rid,
           tradeId: e.tradeId ?? null,
           tsMs: Number(e.tsMs),
           safeMessage: e.safeMessage,

@@ -59,10 +59,11 @@ export interface WriteWfoOpts {
   fromMs: number; toMs: number;
   totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number;
   ranking?: unknown; // ranking-provenance object (from wfo-rank) — embedded verbatim into provenance
+  dedupe?: unknown;  // dedupe report (from wfo-build-raw) — embedded verbatim into provenance
 }
 
 export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSize: number } {
-  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking } = opts;
+  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking, dedupe } = opts;
   if (symbols.length !== 5) throw new Error(`expected exactly 5 symbols, got ${symbols.length}`);
 
   const srcManifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
@@ -121,6 +122,8 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
     rankingTieBreak: 'top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC',
     // proves WHY these 4 were chosen: turnover-map hash, candidate count, selected+rank+turnover, probe window
     ...(ranking !== undefined ? { ranking } : {}),
+    // proves HOW same-minute re-writes in the raw parquet were resolved, and how many there were
+    ...(dedupe !== undefined ? { dedupe } : {}),
     perSymbol: Object.fromEntries(symbols.map((s) => {
       const raw = rawRows[s]!; const inWin = perSymbol[s]!.inWindow; const fin = perSymbol[s]!.final;
       const E = (toMs - fromMs) / 60_000;
@@ -154,6 +157,7 @@ function argMaybe(name: string): string | undefined {
 
 function main(): void {
   const rankingPath = argMaybe('ranking');
+  const dedupePath = argMaybe('dedupe');
   const res = writeWfoFixture({
     source: arg('source'),
     out: arg('out'),
@@ -163,6 +167,7 @@ function main(): void {
     totalGapBudgetMinutes: Number(arg('total-gap-budget')),
     maxConsecutiveGapMinutes: Number(arg('max-consecutive-gap')),
     ...(rankingPath ? { ranking: JSON.parse(readFileSync(rankingPath, 'utf8')) } : {}),
+    ...(dedupePath ? { dedupe: JSON.parse(readFileSync(dedupePath, 'utf8')) } : {}),
   });
   console.log(`wfo fixture written: grid ${res.gridSize} min, bundleRef ${res.bundleRef}`);
 }
