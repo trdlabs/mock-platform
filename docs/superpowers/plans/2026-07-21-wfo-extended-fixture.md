@@ -424,7 +424,12 @@ export function runFixtureVerification(baseDir: string): number {
   for (const root of SCAN_ROOTS) {
     for (const dir of fixtureDirs(join(baseDir, root))) {
       const coveragePath = join(dir, 'coverage.json');
-      if (!existsSync(coveragePath)) { console.log(`WARN  ${dir} — legacy (no declared coverage)`); continue; }
+      if (!existsSync(coveragePath)) {
+        // per-root policy: legacy fixtures/ WARN, wfo/ (declared-coverage tier) FAILs
+        if (coverageRequired) { console.error(`FAIL  ${dir}\n  - coverage.json is required under ${root} (declared-coverage tier)`); failed++; }
+        else { console.log(`WARN  ${dir} — legacy (no declared coverage)`); }
+        continue;
+      }
       enforced++;
 
       let doc: unknown;
@@ -1448,7 +1453,7 @@ git commit -m "feat(fixtures): commit the 42-day native-1m T2 WFO fixture + nest
 
 ## Self-review notes
 
-- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + warn/enforce + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
+- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + per-root warn/enforce (wfo/ requires the sidecar) + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
 - **Honest boundary:** the `tools/fetch-snapshot` package freely imports mock `src/` (like `fetch-snapshot.ts` already does, including `src/contract`); the only isolation is that its npm deps stay out of the root lockfile.
 - **Parquet coverage:** the tools' pure cores (`aggregateTurnover` — incl. fail-closed on non-finite values and cross-partition duplicates — and `assembleRawBundle`) are unit-tested; the thin parquet read/write shells are not (repo convention — `fetch-snapshot`'s reader is likewise untested). Their end-to-end coverage against **real parquet** is **Task 8, which is a required merge gate** (not an optional follow-up): the branch does not merge until Task 8 has run the shells on live data and committed a validated T2.
 - **Delivery order:** Tasks 1-3 (validator) precede Task 8 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-7 are pure code, buildable/reviewable without VPS; only Task 8 needs credentials.

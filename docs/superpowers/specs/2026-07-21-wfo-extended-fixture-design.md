@@ -135,8 +135,12 @@ Any failed step → non-zero exit with a specific message.
 
 - A fixture directory **with** `coverage.json` → **enforce**: any deviation is a
   non-zero exit.
-- A fixture directory **without** `coverage.json` (all existing coverage-less
-  fixtures) → one `WARN (legacy — no declared coverage)` line, exit 0.
+- A fixture directory **without** `coverage.json` — policy is **per root**, not global:
+  - under `data/snapshots/fixtures/*` (predates the sidecar) → one
+    `WARN (legacy — no declared coverage)` line, exit 0;
+  - under `data/snapshots/wfo/*` (exists only for coverage-declaring tiers) → **FAIL**.
+    Otherwise deleting `coverage.json` would remove the admission policy along with the
+    thing it admits, turning the gate green.
 
 `verify_fixtures.ts` scans **exactly two explicit roots** —
 `data/snapshots/fixtures/*` and `data/snapshots/wfo/*` — **not** `data/snapshots/**`,
@@ -279,8 +283,8 @@ image is deferred to the separate rollout (card rollout step 4).
     inspection);
   - the T2 bundle payload appears in **no** layer;
   - no image-size growth on the order of the T2 payload (~20 MB) versus `origin/main`.
-- **CI:** `verify:fixtures` runs in `check:ci`; legacy fixtures WARN (exit 0), T2
-  enforces green. Full `pnpm check:ci` green.
+- **CI:** `verify:fixtures` runs in `check:ci`; legacy `fixtures/*` WARN (exit 0), a
+  `wfo/*` dir without a sidecar FAILs, T2 enforces green. Full `pnpm check:ci` green.
 
 ## §5. Error handling / stop conditions
 
@@ -301,8 +305,8 @@ and WARN).
 - Item 3 is **not** independent once T2 exists: T2's committed `coverage.json` needs a
   mandatory admission/drift gate. So the order is **remove T2 first (or keep
   `verify:fixtures`)**, and only then may the validator be dropped from `check:ci`. With
-  no `coverage.json` anywhere, `verify:fixtures` is a no-op (every fixture WARNs), so
-  leaving it in place is the safe default.
+  no `coverage.json` and no `wfo/` tier, `verify:fixtures` is a no-op (every legacy
+  fixture WARNs), so leaving it in place is the safe default.
 - Item 1: remove the `data/snapshots/wfo/<ref>/` directory; nothing runtime depends on
   it (selection is explicit and out of scope here).
 - Item 5: revert the two one-line default swaps; independent of items 1/3.
