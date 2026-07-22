@@ -3,10 +3,14 @@ dist/
 .env
 *.log
 # real sanitized snapshots are mounted at runtime, never committed
+# (transient VPS pulls under _raw/ are covered by this catch-all and stay untracked)
 /data/snapshots/*
 !/data/snapshots/.gitkeep
 !/data/snapshots/fixtures/
 !/data/snapshots/fixtures/**
+# committed WFO fixtures (declared-coverage tier; never baked into the image — see .dockerignore)
+!/data/snapshots/wfo/
+!/data/snapshots/wfo/**
 
 # Local git worktrees (isolation; never tracked)
 .worktrees/

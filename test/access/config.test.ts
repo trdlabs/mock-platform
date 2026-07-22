@@ -20,4 +20,7 @@ describe('loadMockConfig', () => {
   it('rejects a non-positive replay speed', () => {
     expect(() => loadMockConfig({ MOCK_REPLAY_SPEED: '0' })).toThrow(/MOCK_REPLAY_SPEED/i);
   });
+  it('defaults snapshotRef to the T1 native-1m SSOT fixture, not the synthetic one', () => {
+    expect(loadMockConfig({}).snapshotRef).toBe('fixtures/2026-06-22-to-2026-06-28-vps');
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateHistorical, type MinuteRow } from './fetch-snapshot.ts';
+import { aggregateHistorical, type MinuteRow } from './fetch-snapshot.js';
 
 function makeRow(overrides: Partial<MinuteRow> & { ts: number; sym: string }): MinuteRow {
   return {
