@@ -1546,8 +1546,14 @@ bodies above already carry them; this records what moved and why.
    contained, then a hardcoded `['1h','1d']`. The first meant deleting bars deleted the check;
    the second baked one fixture's choice into the verifier. The sidecar now declares the set,
    the bundle must match it **exactly** (missing *and* extra both `FAIL`), and the enum is
-   `Record<Timeframe, …>`-typed against the SDK contract — so widening to `30m`/`2h` has to
-   start there, not here.
+   `Record<Timeframe, …>`-typed against the local `historical-read` union — so widening to
+   `30m`/`2h` starts in `src/contract/historical-read/dto.ts`, not in a sidecar.
+   **Correction (2026-07-22):** an earlier revision of this note, and the commit message of
+   `3dc9a4c`, claimed the enum was typed against the **SDK** contract and that a widening there
+   would break the build here. That is false: `@trdlabs/sdk@0.11.0` exports no `Timeframe` type
+   (`historical/client.d.ts` types `timeframe` as `string`) and the seam re-exports only
+   `CanonicalRowV2`. The union is mock-local, so the guard binds the mock to itself. Sharing the
+   vocabulary via the SDK is a follow-up, not part of this initiative.
 4. **Bar `tsMs` must be unique and strictly increasing** (Task 2). Bars are matched to buckets
    by `tsMs`, so a repeated bucket agreed on every field and passed twice over.
 5. **The Docker inverse gate asserts instead of branching** (Task 8). `if docker run …` treats a

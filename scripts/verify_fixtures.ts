@@ -8,8 +8,12 @@ import type { Timeframe } from '../src/contract/historical-read/dto.js';
 export const MINUTE_MS = 60_000;
 
 /** Bucket size of every timeframe the contract defines. Typed `Record<Timeframe, …>` on purpose:
- *  widening `Timeframe` in the SDK contract breaks compilation here until this map is widened too,
- *  so a fixture can never declare a timeframe the verifier has no bucket size for. */
+ *  widening the union in `src/contract/historical-read/dto.ts` breaks compilation here until this
+ *  map is widened too, so a fixture can never declare a timeframe the verifier has no bucket size
+ *  for. Note the union is declared THERE, locally — `@trdlabs/sdk@0.11.0` does not export a
+ *  `Timeframe` type at all (its historical client types `timeframe` as `string`), and the SDK seam
+ *  `dto.sdk.ts` re-exports only `CanonicalRowV2`. Lifting this vocabulary into the SDK so both
+ *  sides share one union is a follow-up, not something this map already gives us. */
 export const TF_MS: Readonly<Record<Timeframe, number>> = {
   '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
 };

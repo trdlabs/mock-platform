@@ -60,9 +60,18 @@ both budgets **non-negative integers**. A malformed sidecar is a hard `FAIL` (no
 
 `rowsBySymbol` stays the native-1m source of truth and is gated by the minute
 grid/gap rules below; `barTimeframes` governs only the **derived** bar surface.
-Widening the timeframe set (e.g. `30m`, `2h`) is an **SDK contract change first** — the
-enum here is `Record<Timeframe, …>`-typed against `@trdlabs/sdk`, so the verifier fails
-to compile until the contract and its bucket sizes are widened together.
+Widening the timeframe set (e.g. `30m`, `2h`) starts in the **local historical-read
+contract** (`src/contract/historical-read/dto.ts`): the enum here is
+`Record<Timeframe, …>`-typed against that union, so the verifier fails to compile until
+the union and its bucket sizes are widened together — a fixture sidecar alone can never
+introduce a timeframe.
+
+That union is **mock-local**, not shared. `@trdlabs/sdk@0.11.0` exports no `Timeframe`
+type (its historical client types `timeframe` as `string`), and the SDK seam
+`historical-read/dto.sdk.ts` re-exports only `CanonicalRowV2`. So this guard binds the
+mock to itself, not to the platform: a widening on the SDK side would **not** break the
+build here. Lifting the timeframe vocabulary into `@trdlabs/sdk` so producer and
+consumers share one union is a follow-up, deliberately out of this initiative's scope.
 
 The sidecar is not covered by `checksums.json` (which hashes the bundle). That is
 acceptable: the only way to weaken the gate via the sidecar is to declare a smaller
