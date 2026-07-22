@@ -1372,9 +1372,10 @@ Record `probeFrom` / `probeTo` (ms).
 
 Two things the credentials file does NOT give you directly:
 
-- **Never invoke this through `pnpm fetch:snapshot`** — the pnpm script wrapper echoes the full
-  `--db-url`, password included, into the transcript. Use `./node_modules/.bin/tsx` directly; the
-  tool masks the URL in its own logs.
+- **The URL is no longer an argument** (changed 2026-07-22). `--db-url` was removed because the pnpm
+  script wrapper echoes the command line, password included, into the transcript — and argv is
+  readable via `/proc` for the whole run. Export `MOCK_SNAPSHOT_DB_URL`, or point `--db-url-file` at
+  a 0600 file. `pnpm fetch:snapshot` is safe again; passing `--db-url` now fails fast.
 - **Rewrite the DB host.** `openTunnel` forwards `-L <tunnelPort>:<host-from-db-url>:<port>`, and the
   stored `DATABASE_URL` already points at the *local* end of the tunnel (`127.0.0.1:15432`), so
   passing it through forwards to nowhere. Rewrite host/port to the postgres container's docker-bridge
@@ -1388,8 +1389,8 @@ Env var names are `DATABASE_URL` / `VPS_HOST` / `PARQUET_ROOT` / `SSH_KEY_PATH` 
 
 ```bash
 PATCHED="$(node -e 'const u=new URL(process.env.DATABASE_URL);u.hostname="<bridge-ip>";u.port="5432";process.stdout.write(u.toString())')"
-./node_modules/.bin/tsx tools/fetch-snapshot/fetch-snapshot.ts \
-  --db-url "$PATCHED" --vps "$VPS_HOST" --ssh-key "$SSH_KEY_PATH" \
+MOCK_SNAPSHOT_DB_URL="$PATCHED" ./node_modules/.bin/tsx tools/fetch-snapshot/fetch-snapshot.ts \
+  --vps "$VPS_HOST" --ssh-key "$SSH_KEY_PATH" \
   --parquet-root "$PARQUET_ROOT" --parquet-local "$PARQUET_CACHE" \
   --from <probeFrom UTC date YYYY-MM-DD> --to <(probeTo − 1 day) UTC date YYYY-MM-DD> \
   --symbols HUSDT --ref _raw/wfo-probe --mode replace

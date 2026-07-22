@@ -13,17 +13,23 @@
  * Зависимости (devDependencies):
  *   pnpm add -D pg @types/pg hyparquet
  *
+ * Секрет (URL Postgres) НИКОГДА не передаётся аргументом: pnpm печатает командную строку
+ * скрипта перед запуском, а argv виден через /proc. Только env или файл 0600 — см. resolveDbUrl.
+ *
  * Использование:
+ *   export MOCK_SNAPSHOT_DB_URL="postgres://user:pass@localhost:5432/db"
  *   pnpm fetch:snapshot \
  *     --vps user@host \
- *     --db-url "postgres://user:pass@localhost:5432/db" \
  *     --parquet-root /data/historical \
  *     --from 2026-06-01 --to 2026-06-16 \
  *     --symbols BTCUSDT,ETHUSDT \
  *     --ref 2026-06-16-vps
  *
  *   # Если postgres доступен напрямую (VPN/прямой):
- *   pnpm fetch:snapshot --no-tunnel --db-url "postgres://..." ...
+ *   pnpm fetch:snapshot --no-tunnel ...
+ *
+ *   # Секрет из файла вместо переменной окружения:
+ *   pnpm fetch:snapshot --db-url-file ~/.config/trdlabs/vps-db-url ...
  *
  *   # Только ops-данные без historical:
  *   pnpm fetch:snapshot --no-parquet ...
@@ -38,7 +44,7 @@
 import { createHash } from 'node:crypto';
 import { bundleRefForByteLength, encodeBundleFileBytes } from '../../src/snapshot/bundle-io.js';
 import * as fsp from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -174,6 +180,67 @@ interface Cfg {
   dryRun: boolean;
 }
 
+/** Env var carrying the Postgres URL. Named, exported, and asserted on by the tests so the one
+ *  supported channel cannot be renamed by accident. */
+export const DB_URL_ENV = 'MOCK_SNAPSHOT_DB_URL';
+
+export interface SecretFileReader {
+  read(path: string): string;
+  mode(path: string): number;
+}
+
+const REAL_FILES: SecretFileReader = {
+  read: (p) => readFileSync(p, 'utf8'),
+  mode: (p) => statSync(p).mode,
+};
+
+/**
+ * Resolve the Postgres URL from a channel that is not `process.argv`.
+ *
+ * `--db-url` used to carry it, and that leaked the password on every run: pnpm prints the resolved
+ * command line (`> tsx tools/fetch-snapshot/fetch-snapshot.ts --db-url postgres://user:pw@…`) before
+ * executing a script, so the secret landed in the terminal, in any captured transcript, and in CI
+ * logs — and `process.argv` is world-readable through `/proc/<pid>/cmdline` for the process's whole
+ * lifetime. Neither is fixed by masking our own output, because neither is our output.
+ *
+ * So the flag is **fatal**, not deprecated: a tolerated `--db-url` still leaks before we ever get to
+ * warn about it. Two channels remain — the environment, and a private file named BY PATH (the path
+ * is not a secret; the contents are, and they never enter argv).
+ */
+export function resolveDbUrl(
+  args: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+  files: SecretFileReader = REAL_FILES,
+): string {
+  if (args.includes('--db-url')) {
+    throw new Error(
+      `--db-url is not supported: pnpm echoes the command line, so the password would be printed on every run. ` +
+      `Pass it as ${DB_URL_ENV}=… in the environment, or as --db-url-file <path> to a 0600 file.`,
+    );
+  }
+
+  const fileIdx = args.indexOf('--db-url-file');
+  const filePath = fileIdx !== -1 ? args[fileIdx + 1] : undefined;
+  if (filePath) {
+    // A file anyone can read is not a secret store. Refuse rather than silently accept it — the
+    // whole point of moving off argv is that the URL stops being readable by other local users.
+    const mode = files.mode(filePath);
+    if ((mode & 0o077) !== 0) {
+      throw new Error(`${filePath} is group/other-readable (mode ${(mode & 0o777).toString(8)}); chmod 0600 it first`);
+    }
+    const fromFile = files.read(filePath).trim();
+    if (!fromFile) throw new Error(`${filePath} is empty`);
+    return fromFile;
+  }
+
+  const fromEnv = (env[DB_URL_ENV] ?? '').trim();
+  if (fromEnv) return fromEnv;
+
+  throw new Error(
+    `No Postgres URL. Set ${DB_URL_ENV} in the environment, or pass --db-url-file <path> to a 0600 file.`,
+  );
+}
+
 function parseArgs(): Cfg {
   const args = process.argv.slice(2);
 
@@ -198,7 +265,7 @@ function parseArgs(): Cfg {
 
   return {
     vps: optMaybe('vps'),
-    dbUrl: opt('db-url'),
+    dbUrl: resolveDbUrl(args, process.env),
     parquetRoot: optMaybe('parquet-root'),
     dateFrom: opt('from'),
     dateTo: opt('to'),
@@ -215,19 +282,26 @@ function parseArgs(): Cfg {
   };
 }
 
-const fetchSnapshotDoc = `
+export const fetchSnapshotDoc = `
 fetch-snapshot.ts — fetch VPS slice → trading-mock-platform snapshot
 
+The Postgres URL is a secret and is NEVER a command-line argument: pnpm prints the
+command line before running the script, and argv is readable via /proc. Supply it as
+${DB_URL_ENV} in the environment, or point --db-url-file at a 0600 file.
+
 Usage:
+  export ${DB_URL_ENV}="postgres://user@localhost:5432/db"   # password included
   pnpm fetch:snapshot --vps user@host \\
-    --db-url "postgres://user:pass@localhost:5432/db" \\
     --parquet-root /data/historical \\
     --from 2026-06-01 --to 2026-06-16 \\
     --symbols BTCUSDT,ETHUSDT --ref 2026-06-16-vps
 
+  # or, keeping it out of the shell environment entirely:
+  pnpm fetch:snapshot --db-url-file ~/.config/trdlabs/vps-db-url --vps user@host ...
+
 Options:
   --vps USER@HOST         SSH target (not needed with --no-tunnel)
-  --db-url URL            Postgres connection URL
+  --db-url-file PATH      File holding the Postgres URL (mode 0600; alternative to ${DB_URL_ENV})
   --parquet-root PATH     Parquet root on VPS (schema_version=1/ layout)
   --from YYYY-MM-DD       Period start (inclusive, UTC)
   --to   YYYY-MM-DD       Period end (inclusive, UTC)
