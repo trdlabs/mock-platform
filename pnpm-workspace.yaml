@@ -1,4 +1,7 @@
+# pnpm 11 replaced `onlyBuiltDependencies` with `allowBuilds` (https://pnpm.io/settings#allowbuilds).
+# The file carried a literal placeholder ("set this to true or false"), which pnpm reads as "no
+# decision recorded" — so every plain `pnpm install` exited 1 on ERR_PNPM_IGNORED_BUILDS and CI only
+# survived by passing --ignore-scripts. esbuild is a vitest/tsc transitive dep; approving its build
+# is the decision that was never actually written down.
 allowBuilds:
-  esbuild: set this to true or false
-onlyBuiltDependencies:
-  - esbuild
+  esbuild: true

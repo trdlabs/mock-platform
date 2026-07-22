@@ -184,6 +184,16 @@ interface Cfg {
  *  supported channel cannot be renamed by accident. */
 export const DB_URL_ENV = 'MOCK_SNAPSHOT_DB_URL';
 
+/** Read `--name VALUE` or `--name=VALUE`. The rest of this CLI only understands the spaced form;
+ *  this helper exists so the two flags that participate in the secret path accept both, rather than
+ *  silently ignoring a spelling the user reasonably expects to work. */
+function optionValue(args: readonly string[], name: string): string | undefined {
+  const inline = args.find((a) => a.startsWith(`${name}=`));
+  if (inline) return inline.slice(name.length + 1);
+  const i = args.indexOf(name);
+  return i !== -1 ? args[i + 1] : undefined;
+}
+
 export interface SecretFileReader {
   read(path: string): string;
   mode(path: string): number;
@@ -212,15 +222,17 @@ export function resolveDbUrl(
   env: Readonly<Record<string, string | undefined>>,
   files: SecretFileReader = REAL_FILES,
 ): string {
-  if (args.includes('--db-url')) {
+  // BOTH spellings. `--db-url=postgres://…` is a single argv entry, so it reaches pnpm's banner and
+  // /proc exactly like the space-separated form — blocking only one spelling blocks nothing.
+  // The `=` check must not swallow `--db-url-file=…`, which shares the prefix and is legitimate.
+  if (args.some((a) => a === '--db-url' || a.startsWith('--db-url='))) {
     throw new Error(
       `--db-url is not supported: pnpm echoes the command line, so the password would be printed on every run. ` +
       `Pass it as ${DB_URL_ENV}=… in the environment, or as --db-url-file <path> to a 0600 file.`,
     );
   }
 
-  const fileIdx = args.indexOf('--db-url-file');
-  const filePath = fileIdx !== -1 ? args[fileIdx + 1] : undefined;
+  const filePath = optionValue(args, '--db-url-file');
   if (filePath) {
     // A file anyone can read is not a secret store. Refuse rather than silently accept it — the
     // whole point of moving off argv is that the URL stops being readable by other local users.

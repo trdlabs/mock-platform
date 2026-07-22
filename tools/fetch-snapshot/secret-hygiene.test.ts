@@ -32,9 +32,32 @@ describe('resolveDbUrl — the secret never travels as an argument', () => {
     } catch (e) {
       msg = (e as Error).message;
     }
-    expect(msg).toContain('--db-url');
+    // Must be the REFUSAL, not the generic "no URL given" error — that one also mentions
+    // --db-url-file and the env var, so a loose assertion here passes without any code change.
+    expect(msg).toMatch(/^--db-url is not supported/);
     expect(msg).toContain(DB_URL_ENV);
     expect(msg).not.toContain(PASS);
+  });
+
+  it('refuses the --db-url=VALUE form too, and does not echo it either', () => {
+    // Blocking only the space-separated spelling left the leak fully open: `--db-url=postgres://…`
+    // is one argv entry, so it reaches pnpm's banner and /proc exactly the same way.
+    let msg = '';
+    try {
+      resolveDbUrl([`--db-url=${URL_WITH_PASS}`], {}, noFiles);
+      throw new Error('expected resolveDbUrl to throw');
+    } catch (e) { msg = (e as Error).message; }
+    // Must be the REFUSAL, not the generic "no URL given" error — that one also mentions
+    // --db-url-file and the env var, so a loose assertion here passes without any code change.
+    expect(msg).toMatch(/^--db-url is not supported/);
+    expect(msg).toContain(DB_URL_ENV);
+    expect(msg).not.toContain(PASS);
+  });
+
+  it('does not mistake --db-url-file for the banned flag (prefix collision)', () => {
+    const p = secretFile(0o600);
+    expect(resolveDbUrl(['--db-url-file', p], {}, realFiles())).toBe(URL_WITH_PASS);
+    expect(resolveDbUrl([`--db-url-file=${p}`], {}, realFiles())).toBe(URL_WITH_PASS);
   });
 
   it('reads the URL from the environment', () => {

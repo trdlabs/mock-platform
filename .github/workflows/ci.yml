@@ -17,9 +17,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      # --ignore-scripts: esbuild's prebuilt binary (an optional dep) is enough for vitest/tsc;
-      # pnpm 11 otherwise exits non-zero on its "ignored build scripts" policy. Deterministic + safe.
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # No --ignore-scripts here on purpose. pnpm-workspace.yaml records the build decision
+      # (allowBuilds: esbuild: true), so a plain install succeeds — and if that decision is ever
+      # lost again, this step is what fails. Suppressing scripts would hide exactly that drift:
+      # pnpm reacts to an unrecorded decision by REWRITING pnpm-workspace.yaml with a
+      # "set this to true or false" placeholder, which is how the broken file got committed.
+      - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm verify:no-forbidden-deps
       - run: pnpm verify:no-secrets
@@ -44,11 +47,14 @@ jobs:
       # of the root lockfile), and src/contract/ops-read reaches the SDK seam through its barrel,
       # so typechecking it needs the ROOT dependencies present. Locally this is invisible: module
       # resolution walks up into the repo's own node_modules.
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm install --frozen-lockfile
       - working-directory: tools/fetch-snapshot
-        # --ignore-scripts for the same reason as the root job: pnpm 11 exits non-zero rather than
-        # silently skipping a dependency's build scripts, and esbuild's prebuilt binary is enough
-        # for vitest/tsc.
+        # --ignore-scripts IS still needed here, for a reason the root job does not have:
+        # --ignore-workspace makes pnpm skip pnpm-workspace.yaml entirely, so this package's
+        # allowBuilds is never read and the install would fail on ignored builds (verified).
+        # --ignore-workspace itself stays: it is what keeps the tool's pg/hyparquet resolution
+        # from ever being influenced by the repo root. esbuild's prebuilt binary is enough for
+        # vitest/tsc, so nothing is lost by not building it.
         run: |
           pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
           pnpm typecheck
