@@ -46,6 +46,7 @@ data/snapshots/wfo/<ref>/coverage.json      # declared; read ONLY by verify_fixt
   "schemaVersion": "fixture-coverage.1",
   "period":  { "fromMs": <int>, "toMs": <int> },   // half-open, both % 60000 == 0
   "symbols": ["HUSDT", "...", "...", "...", "..."], // exactly the native-1m symbols
+  "barTimeframes": ["1h", "1d"],                    // derived timeframes this fixture ships
   "totalGapBudgetMinutes":    6480,                 // 37.5d net over a 42d window
   "maxConsecutiveGapMinutes": 1440                  // no single blackout longer than 1 day
 }
@@ -53,8 +54,15 @@ data/snapshots/wfo/<ref>/coverage.json      # declared; read ONLY by verify_fixt
 
 **Strict AJV schema for the sidecar** (`fixture-coverage.1`):
 `additionalProperties: false`; `period.fromMs`/`period.toMs` integers, `% 60000 == 0`,
-`toMs > fromMs`; `symbols` exactly **5** unique strings; both budgets **non-negative
-integers**. A malformed sidecar is a hard `FAIL` (not a warn).
+`toMs > fromMs`; `symbols` exactly **5** unique strings; `barTimeframes` a **non-empty,
+unique** subset of the contract's `Timeframe` union (`1m | 5m | 15m | 1h | 4h | 1d`);
+both budgets **non-negative integers**. A malformed sidecar is a hard `FAIL` (not a warn).
+
+`rowsBySymbol` stays the native-1m source of truth and is gated by the minute
+grid/gap rules below; `barTimeframes` governs only the **derived** bar surface.
+Widening the timeframe set (e.g. `30m`, `2h`) is an **SDK contract change first** — the
+enum here is `Record<Timeframe, …>`-typed against `@trdlabs/sdk`, so the verifier fails
+to compile until the contract and its bucket sizes are widened together.
 
 The sidecar is not covered by `checksums.json` (which hashes the bundle). That is
 acceptable: the only way to weaken the gate via the sidecar is to declare a smaller
@@ -144,9 +152,31 @@ symbol yields a clean diagnostic `FAIL` rather than a technical exception:
 4. **unified grid**: `minute_ts` sets identical across all 5 → `G`;
 5. **window containment**: every `g ∈ G` is in `[fromMs, toMs)`;
 6. **total gap** ≤ `totalGapBudgetMinutes`;
-7. **max consecutive gap** (edge-inclusive) ≤ `maxConsecutiveGapMinutes`.
+7. **max consecutive gap** (edge-inclusive) ≤ `maxConsecutiveGapMinutes`;
+8. **derived surfaces** (§1.5.1) — only once steps 2–7 pass, since every rule there is
+   "agrees with the rows" and rows already rejected would report as endless disagreement.
 
 Any failed step → non-zero exit with a specific message.
+
+### 1.5.1 Derived-surface gate
+
+`rowsBySymbol` is the source; everything else in `historical` is a function of it, and
+each is checked against the rows the fixture actually ships:
+
+- `fundingBySymbol` / `openInterestBySymbol` / `liquidationsBySymbol`: no undeclared
+  symbol, no entry outside `[fromMs, toMs)`;
+- `barsBySymbolAndTimeframe`: for **each declared symbol**, the key set must equal
+  `barTimeframes` **exactly** — a missing timeframe and an extra one are both `FAIL`.
+  The set is driven by the sidecar, never by the bundle: iterating what the bundle
+  happens to contain means deleting a symbol, a timeframe, or the whole surface leaves
+  nothing to disagree with, and the gate passes by having no work to do.
+- For each declared timeframe, every bucket is **rebuilt from the minute rows** (open of
+  the first minute, close of the last, high/low extremes, volume summed) and compared on
+  **all five OHLCV fields**. Volume alone let a bar carry wrong prices whenever the sizes
+  still added up.
+- Bar `tsMs` must be **unique and strictly increasing**. Bars are matched to buckets by
+  `tsMs`, so a repeated bucket agrees on every field and passes twice over.
+- Every bucket that has shipped rows must have a bar, and every bar must have rows.
 
 ### 1.6 Warn / enforce policy and scan roots
 
@@ -208,15 +238,20 @@ This keeps one visit, the original 5-symbol scope, and bounded RAM/disk.
 - **Intersection:** `rowsBySymbol[sym]` is filtered to the common grid
   `G = ⋂ minute_ts` within `[fromMs, toMs)`, for all 5 symbols. The grid invariant
   then holds by construction.
-- **Bars:** `barsBySymbolAndTimeframe` (1h/1d) for the 5 symbols is **also filtered to
-  `[fromMs, toMs)`**. Otherwise a fixture declaring a 42-day coverage window would leak
-  data outside it through the bars surface.
+- **Bars:** `barsBySymbolAndTimeframe` is **re-derived** from the intersected rows for
+  exactly the timeframes `--bar-timeframes` names (default `1h,1d`), not filtered from
+  the source. Filtering leaves the exporter's pre-dedupe aggregation intact, so a
+  re-written minute stays double-counted in its bucket; deriving makes every bar equal
+  the rows the fixture ships and puts it inside the window by construction. The same flag
+  populates `coverage.barTimeframes`, so a fixture cannot ship a set other than the one
+  the gate will hold it to.
 
 ### 2.3 Authoring — sidecars from intent (local)
 
 New `scripts/make-wfo-fixture.ts` reads the raw local source fixture and produces the
 aligned committed fixture. It takes as **required flags**: `--symbols`, `--from`,
-`--to`, `--total-gap-budget`, `--max-consecutive-gap`. It:
+`--to`, `--total-gap-budget`, `--max-consecutive-gap`; plus optional
+`--bar-timeframes` (default `1h,1d`). It:
 
 - writes the aligned bundle via the existing `writeSnapshot` path (manifest +
   checksums, gzip when raw > 90 MiB — expected here);

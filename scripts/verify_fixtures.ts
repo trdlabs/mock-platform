@@ -3,13 +3,27 @@ import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSnapshot } from '../src/snapshot/loader.js';
+import type { Timeframe } from '../src/contract/historical-read/dto.js';
 
 export const MINUTE_MS = 60_000;
+
+/** Bucket size of every timeframe the contract defines. Typed `Record<Timeframe, …>` on purpose:
+ *  widening `Timeframe` in the SDK contract breaks compilation here until this map is widened too,
+ *  so a fixture can never declare a timeframe the verifier has no bucket size for. */
+export const TF_MS: Readonly<Record<Timeframe, number>> = {
+  '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
+};
+
+/** Sole source of "which timeframes exist" — the sidecar picks a subset, it never invents one. */
+export const CONTRACT_TIMEFRAMES = Object.keys(TF_MS) as Timeframe[];
 
 export interface CoverageDoc {
   schemaVersion: 'fixture-coverage.1';
   period: { fromMs: number; toMs: number };
   symbols: string[];
+  /** The derived timeframes this fixture claims to ship, for every declared symbol. The bundle must
+   *  carry exactly this set — no more, no less. See checkDerivedSurfaces. */
+  barTimeframes: ReadonlyArray<Timeframe>;
   totalGapBudgetMinutes: number;
   maxConsecutiveGapMinutes: number;
 }
@@ -18,7 +32,7 @@ const COVERAGE_SCHEMA = {
   $id: 'fixture-coverage',
   type: 'object',
   additionalProperties: false,
-  required: ['schemaVersion', 'period', 'symbols', 'totalGapBudgetMinutes', 'maxConsecutiveGapMinutes'],
+  required: ['schemaVersion', 'period', 'symbols', 'barTimeframes', 'totalGapBudgetMinutes', 'maxConsecutiveGapMinutes'],
   properties: {
     schemaVersion: { const: 'fixture-coverage.1' },
     period: {
@@ -31,6 +45,7 @@ const COVERAGE_SCHEMA = {
       },
     },
     symbols: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5, uniqueItems: true },
+    barTimeframes: { type: 'array', items: { enum: CONTRACT_TIMEFRAMES }, minItems: 1, uniqueItems: true },
     totalGapBudgetMinutes: { type: 'integer', minimum: 0 },
     maxConsecutiveGapMinutes: { type: 'integer', minimum: 0 },
   },
@@ -82,16 +97,6 @@ export function maxConsecutiveGap(grid: number[], fromMs: number, toMs: number):
   const trailing = (toMs - prev) / MINUTE_MS - 1;
   return Math.max(max, trailing);
 }
-
-const TF_MS: Readonly<Record<string, number>> = {
-  '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
-};
-
-/** The derived surfaces of a historical block — everything that is NOT `rowsBySymbol`. */
-/** Timeframes every declared symbol must carry. Absence is a failure, not a pass: the surfaces are
- *  derived from the rows, so a fixture with rows but no bars is malformed, and treating "no bars"
- *  as "nothing to disagree with" would let the whole check be skipped by deleting data. */
-const REQUIRED_TIMEFRAMES = ['1h', '1d'] as const;
 
 const OHLCV = ['open', 'high', 'low', 'close', 'volume'] as const;
 
@@ -148,8 +153,9 @@ export function checkDerivedSurfaces(coverage: CoverageDoc, historical: Historic
     if (!declared.has(symbol)) errs.push(`barsBySymbolAndTimeframe: undeclared symbol ${symbol}`);
   }
 
-  // Driven by the DECLARED symbols and the REQUIRED timeframes, not by whatever the bundle happens
+  // Driven by the DECLARED symbols and the DECLARED timeframes, not by whatever the bundle happens
   // to contain — otherwise deleting a symbol, a timeframe, or the whole surface would pass silently.
+  const declaredTfs = [...coverage.barTimeframes].sort();
   for (const symbol of coverage.symbols) {
     const shipped = rows[symbol] ?? [];
     const tfs = barsBySymbol[symbol];
@@ -157,13 +163,19 @@ export function checkDerivedSurfaces(coverage: CoverageDoc, historical: Historic
       errs.push(`barsBySymbolAndTimeframe: missing bars for declared symbol ${symbol}`);
       continue;
     }
-    for (const tf of REQUIRED_TIMEFRAMES) {
+
+    // Exact set equality, both directions. A missing timeframe is data the sidecar promised and the
+    // bundle does not have; an extra one is data nobody declared, so nothing holds it to the rows.
+    const actualTfs = Object.keys(tfs).sort();
+    const missingTfs = declaredTfs.filter((t) => !actualTfs.includes(t));
+    const extraTfs = actualTfs.filter((t) => !declaredTfs.includes(t as Timeframe));
+    if (missingTfs.length) errs.push(`barsBySymbolAndTimeframe[${symbol}]: missing declared timeframe(s) ${missingTfs.join(', ')}`);
+    if (extraTfs.length) errs.push(`barsBySymbolAndTimeframe[${symbol}]: undeclared timeframe(s) ${extraTfs.join(', ')}`);
+
+    for (const tf of coverage.barTimeframes) {
       const bars = tfs[tf];
-      if (bars === undefined) {
-        errs.push(`barsBySymbolAndTimeframe[${symbol}]: missing required timeframe ${tf}`);
-        continue;
-      }
-      const tfMs = TF_MS[tf]!;
+      if (bars === undefined) continue; // already reported as missing
+      const tfMs = TF_MS[tf];
       if (shipped.some((r) => OHLCV.some((f) => !Number.isFinite(r[f])))) {
         errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: rows carry no numeric OHLCV, bars cannot be verified`);
         continue;
@@ -183,6 +195,18 @@ export function checkDerivedSurfaces(coverage: CoverageDoc, historical: Historic
           acc.close = r.close!;
           acc.volume += r.volume!;
         }
+      }
+
+      // Bars are matched to buckets by tsMs, so a repeated bucket agrees with the rows on every
+      // field and would pass twice over; and a consumer reading the array in order would see the
+      // series rewind. Neither is visible to the value comparison below.
+      const seenTs = new Set<number>();
+      let prevTs = -Infinity;
+      for (const bar of bars) {
+        if (seenTs.has(bar.tsMs)) errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: duplicate bar tsMs ${bar.tsMs}`);
+        else if (bar.tsMs <= prevTs) errs.push(`barsBySymbolAndTimeframe[${symbol}][${tf}]: bar tsMs ${bar.tsMs} not strictly increasing (prev ${prevTs})`);
+        seenTs.add(bar.tsMs);
+        prevTs = bar.tsMs;
       }
 
       for (const bar of bars) {

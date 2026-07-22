@@ -29,7 +29,7 @@
 - Test: `test/scripts/verify-fixtures.test.ts`
 
 **Interfaces:**
-- Produces: `MINUTE_MS: number`; `interface CoverageDoc { schemaVersion: 'fixture-coverage.1'; period: { fromMs: number; toMs: number }; symbols: string[]; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number }`; `validateCoverageDoc(doc: unknown): string[]` (returns `[]` when valid).
+- Produces: `MINUTE_MS: number`; `interface CoverageDoc { schemaVersion: 'fixture-coverage.1'; period: { fromMs: number; toMs: number }; symbols: string[]; barTimeframes: ReadonlyArray<Timeframe>; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number }`; `validateCoverageDoc(doc: unknown): string[]` (returns `[]` when valid).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -42,6 +42,7 @@ const ok = {
   schemaVersion: 'fixture-coverage.1',
   period: { fromMs: 60_000, toMs: 60_000 + 42 * 86_400_000 },
   symbols: ['AUSDT', 'BUSDT', 'CUSDT', 'DUSDT', 'HUSDT'],
+  barTimeframes: ['1h', '1d'],
   totalGapBudgetMinutes: 6480,
   maxConsecutiveGapMinutes: 1440,
 };
@@ -90,6 +91,7 @@ export interface CoverageDoc {
   schemaVersion: 'fixture-coverage.1';
   period: { fromMs: number; toMs: number };
   symbols: string[];
+  barTimeframes: ReadonlyArray<Timeframe>;
   totalGapBudgetMinutes: number;
   maxConsecutiveGapMinutes: number;
 }
@@ -98,7 +100,7 @@ const COVERAGE_SCHEMA = {
   $id: 'fixture-coverage',
   type: 'object',
   additionalProperties: false,
-  required: ['schemaVersion', 'period', 'symbols', 'totalGapBudgetMinutes', 'maxConsecutiveGapMinutes'],
+  required: ['schemaVersion', 'period', 'symbols', 'barTimeframes', 'totalGapBudgetMinutes', 'maxConsecutiveGapMinutes'],
   properties: {
     schemaVersion: { const: 'fixture-coverage.1' },
     period: {
@@ -111,6 +113,7 @@ const COVERAGE_SCHEMA = {
       },
     },
     symbols: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5, uniqueItems: true },
+    barTimeframes: { type: 'array', items: { enum: CONTRACT_TIMEFRAMES }, minItems: 1, uniqueItems: true },
     totalGapBudgetMinutes: { type: 'integer', minimum: 0 },
     maxConsecutiveGapMinutes: { type: 'integer', minimum: 0 },
   },
@@ -570,7 +573,7 @@ Exports `writeWfoFixture(opts)` — tested end-to-end in a temp dir against a re
 - Produces:
   - `intersectToCommonGrid<R extends { minute_ts: number }>(rowsBySymbol, symbols, fromMs, toMs): { grid: number[]; filtered: Record<string, R[]>; perSymbol: Record<string, { inWindow: number; final: number }> }`
   - `filterBarsToWindow<B extends { tsMs: number }>(bars, fromMs, toMs): Record<string, Record<string, B[]>>`
-  - `writeWfoFixture(opts: { source: string; out: string; symbols: string[]; fromMs: number; toMs: number; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number; ranking?: unknown }): { bundleRef: string; gridSize: number }`
+  - `writeWfoFixture(opts: { source: string; out: string; symbols: string[]; fromMs: number; toMs: number; barTimeframes: ReadonlyArray<Timeframe>; totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number; ranking?: unknown }): { bundleRef: string; gridSize: number }`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1525,9 +1528,35 @@ required `runId` on events. See commit `5ad6489`; this is what the gate is for.
 
 ---
 
+## Post-review amendments
+
+Changes made after the plan was executed, driven by review of the shipped branch. The task
+bodies above already carry them; this records what moved and why.
+
+1. **Bars are derived, not filtered** (Task 5). Filtering the source's
+   `barsBySymbolAndTimeframe` to the window kept the exporter's pre-dedupe aggregation, so a
+   re-written minute stayed double-counted (measured: BTCUSDT 1h at 2026-07-03T13:00Z read
+   2243.652 against a row sum of 2156.813), and the funding/OI/liquidation series were carried
+   over with a symbol filter only, leaking 8 days past a 42-day window (54,630 OI entries and
+   18,119 liquidations before the fixture's own start). `deriveHistoricalSurfaces` rebuilds
+   every surface from the final rows instead.
+2. **The bar gate compares all five OHLCV fields** (Task 2). Comparing `volume` alone let a bar
+   carry wrong prices whenever the sizes still added up.
+3. **`barTimeframes` in the sidecar** (Task 1). The gate first iterated whatever the bundle
+   contained, then a hardcoded `['1h','1d']`. The first meant deleting bars deleted the check;
+   the second baked one fixture's choice into the verifier. The sidecar now declares the set,
+   the bundle must match it **exactly** (missing *and* extra both `FAIL`), and the enum is
+   `Record<Timeframe, …>`-typed against the SDK contract — so widening to `30m`/`2h` has to
+   start there, not here.
+4. **Bar `tsMs` must be unique and strictly increasing** (Task 2). Bars are matched to buckets
+   by `tsMs`, so a repeated bucket agreed on every field and passed twice over.
+5. **The Docker inverse gate asserts instead of branching** (Task 8). `if docker run …` treats a
+   container that failed to start as "path absent" — fail-open. It is now a bare command whose
+   exit code is the assertion.
+
 ## Self-review notes
 
-- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + per-root warn/enforce (wfo/ requires the sidecar) + JSON-parse guard (Task 3); bars filtered to window (Task 5); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
+- **Spec coverage:** item 3 → Tasks 1-3; item 5 → Task 4; item 1 → Tasks 5-8. Sidecar (Task 1); anti-tautology — authored from flags in Task 5, validator never writes (Tasks 2-3); unified grid + exact symbol set + gap semantics (Task 2); two scan roots + per-root warn/enforce (wfo/ requires the sidecar) + JSON-parse guard (Task 3); bars and every other derived surface re-derived from the shipped rows for the sidecar-declared timeframes (Task 5, amendments 1 & 3); provenance attrition split (VPS absence vs probe surplus vs intersection) + tie-break + raw-pre-gzip hash (Task 5); deterministic ranking + window selection as tested code (Task 6); parquet tools with pure cores unit-tested + isolated-package tsconfig + CI job (Task 7); one read-only visit + local parquet aggregate + local 5-symbol build, `--parquet-root` + inclusive-`--to` + unique `mktemp` temp paths (Task 8); image inverse gate with real byte delta + isolation-safe worktree + nested-ref smoke (Task 8); `_raw` gitignored (editor, committed first) (Task 8); stop conditions (Task 8 ⛔). All present.
 - **Honest boundary:** the `tools/fetch-snapshot` package freely imports mock `src/` (like `fetch-snapshot.ts` already does, including `src/contract`); the only isolation is that its npm deps stay out of the root lockfile.
 - **Parquet coverage:** the tools' pure cores (`aggregateTurnover` — incl. fail-closed on non-finite values and cross-partition duplicates — and `assembleRawBundle`) are unit-tested; the thin parquet read/write shells are not (repo convention — `fetch-snapshot`'s reader is likewise untested). Their end-to-end coverage against **real parquet** is **Task 8, which is a required merge gate** (not an optional follow-up): the branch does not merge until Task 8 has run the shells on live data and committed a validated T2.
 - **Delivery order:** Tasks 1-3 (validator) precede Task 8 (fixture), so T2 is admitted through an existing gate. Task 4 is independent. Tasks 5-7 are pure code, buildable/reviewable without VPS; only Task 8 needs credentials.

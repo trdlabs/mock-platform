@@ -11,6 +11,10 @@
     "HYPEUSDT",
     "SOLUSDT"
   ],
+  "barTimeframes": [
+    "1h",
+    "1d"
+  ],
   "totalGapBudgetMinutes": 6480,
   "maxConsecutiveGapMinutes": 1440
 }

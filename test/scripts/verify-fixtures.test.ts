@@ -6,6 +6,7 @@ const ok = {
   schemaVersion: 'fixture-coverage.1',
   period: { fromMs: 60_000, toMs: 60_000 + 42 * 86_400_000 },
   symbols: ['AUSDT', 'BUSDT', 'CUSDT', 'DUSDT', 'HUSDT'],
+  barTimeframes: ['1h', '1d'],
   totalGapBudgetMinutes: 6480,
   maxConsecutiveGapMinutes: 1440,
 };
@@ -34,6 +35,28 @@ describe('validateCoverageDoc', () => {
   it('rejects toMs <= fromMs', () => {
     expect(validateCoverageDoc({ ...ok, period: { fromMs: 120_000, toMs: 120_000 } }).length).toBeGreaterThan(0);
   });
+
+  // barTimeframes is what makes the bar gate universal: the sidecar, not the verifier, says which
+  // derived timeframes this fixture claims. A fixture that omits it has declared nothing, so there
+  // would again be nothing for the gate to hold the bundle to.
+  it('requires barTimeframes', () => {
+    const { barTimeframes: _omit, ...without } = ok;
+    expect(validateCoverageDoc(without).length).toBeGreaterThan(0);
+  });
+  it('rejects an empty or duplicated barTimeframes', () => {
+    expect(validateCoverageDoc({ ...ok, barTimeframes: [] }).length).toBeGreaterThan(0);
+    expect(validateCoverageDoc({ ...ok, barTimeframes: ['1h', '1h'] }).length).toBeGreaterThan(0);
+  });
+  it('rejects a timeframe the contract does not define', () => {
+    // `30m` is a plausible-looking value that Timeframe does NOT contain. Widening the set has to
+    // start in the SDK contract, not in a fixture sidecar.
+    expect(validateCoverageDoc({ ...ok, barTimeframes: ['1h', '30m'] }).length).toBeGreaterThan(0);
+    expect(validateCoverageDoc({ ...ok, barTimeframes: ['bogus'] }).length).toBeGreaterThan(0);
+  });
+  it('accepts any subset of the contract timeframes', () => {
+    expect(validateCoverageDoc({ ...ok, barTimeframes: ['5m', '15m'] })).toEqual([]);
+    expect(validateCoverageDoc({ ...ok, barTimeframes: ['1m', '5m', '15m', '1h', '4h', '1d'] })).toEqual([]);
+  });
 });
 
 // append to test/scripts/verify-fixtures.test.ts
@@ -47,6 +70,7 @@ const cov = {
   schemaVersion: 'fixture-coverage.1' as const,
   period: { fromMs: from, toMs: to },
   symbols: ['A', 'B', 'C', 'D', 'E'],
+  barTimeframes: ['1h', '1d'] as const,
   totalGapBudgetMinutes: 2,
   maxConsecutiveGapMinutes: 1,
 };
@@ -136,6 +160,16 @@ describe('checkDerivedSurfaces (the whole historical block, not just rows)', () 
     Object.fromEntries(cov.symbols.map((s) => [
       s, gridArr().map((t, i) => ({ minute_ts: t, open: 10 + i, high: 20 + i, low: 5 + i, close: 15 + i, volume: 2 })),
     ]));
+  /** The 5m and 15m aggregation of `rowsWithVolume`, worked out by hand rather than by calling the
+   *  production bucketer, so these cases are evidence and not a restatement of the code under test.
+   *  Rows are minute i=0..9 at t=(i+1)*60_000, open 10+i, high 20+i, low 5+i, close 15+i, volume 2. */
+  const FIVE_M_BARS = [
+    { tsMs: 0,       open: 10, high: 23, low: 5, close: 18, volume: 8 },   // i=0..3
+    { tsMs: 300_000, open: 14, high: 28, low: 9, close: 23, volume: 10 },  // i=4..8
+    { tsMs: 600_000, open: 19, high: 29, low: 14, close: 24, volume: 2 },  // i=9
+  ];
+  const FIFTEEN_M_BARS = [{ tsMs: 0, open: 10, high: 29, low: 5, close: 24, volume: 20 }]; // i=0..9
+
   /** Bars that genuinely agree with the rows above: one bucket per timeframe, full OHLCV. */
   const goodBars = () => {
     const g = gridArr();
@@ -178,10 +212,73 @@ describe('checkDerivedSurfaces (the whole historical block, not just rows)', () 
     expect(errs.some((e) => e.includes('missing bars for declared symbol C'))).toBe(true);
   });
 
-  it('FAILS when a required timeframe is missing', () => {
+  it('FAILS when a declared timeframe is missing', () => {
     const bars = goodBars(); delete (bars.B as unknown as Record<string, unknown>)['1d'];
     const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
-    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[B]') && e.includes('missing required timeframe 1d'))).toBe(true);
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[B]') && e.includes('missing declared timeframe(s) 1d'))).toBe(true);
+  });
+
+  it('FAILS a timeframe the sidecar does not declare, even when its bars are correct', () => {
+    // A well-formed 5m surface is still a surface nobody declared: the sidecar is the contract, so
+    // shipping more than it says is a mismatch, not a bonus. Without this the set check is one-sided
+    // and an undeclared timeframe rides along unverified.
+    const bars = goodBars();
+    (bars.A as Record<string, unknown>)['5m'] = FIVE_M_BARS;
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('barsBySymbolAndTimeframe[A]') && e.includes('undeclared timeframe(s) 5m'))).toBe(true);
+  });
+
+  it('FAILS a timeframe name the contract does not define', () => {
+    const bars = goodBars();
+    (bars.A as Record<string, unknown>)['30m'] = [];
+    const errs = checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: bars });
+    expect(errs.some((e) => e.includes('undeclared timeframe(s) 30m'))).toBe(true);
+  });
+
+  it('FAILS duplicate or out-of-order bar tsMs', () => {
+    // Bars are looked up by tsMs, so a repeated bucket agrees with the rows on every field and would
+    // otherwise pass twice over — while a consumer reading them in order sees the bucket rewind.
+    const dup = goodBars();
+    dup.A!['1h'] = [dup.A!['1h']![0]!, { ...dup.A!['1h']![0]! }];
+    expect(checkFixture(cov, { rowsBySymbol: rowsWithVolume(), barsBySymbolAndTimeframe: dup })
+      .some((e) => e.includes('[A][1h]') && e.includes('duplicate bar tsMs'))).toBe(true);
+
+    // Two rows in two different hours, so 1h genuinely has two buckets to put out of order.
+    const covTwoHours = {
+      ...cov,
+      period: { fromMs: from, toMs: 2 * 3_600_000 },
+      totalGapBudgetMinutes: 1000, maxConsecutiveGapMinutes: 1000,
+    };
+    const flat = (tsMs: number, v: number) => ({ tsMs, open: v, high: v, low: v, close: v, volume: v });
+    const rows = Object.fromEntries(cov.symbols.map((s) => [s, [
+      { minute_ts: from, open: 1, high: 1, low: 1, close: 1, volume: 1 },
+      { minute_ts: 3_600_000, open: 2, high: 2, low: 2, close: 2, volume: 2 },
+    ]]));
+    const unordered = Object.fromEntries(cov.symbols.map((s) => [s, {
+      '1h': [flat(3_600_000, 2), flat(0, 1)],                                  // descending
+      '1d': [{ tsMs: 0, open: 1, high: 2, low: 1, close: 2, volume: 3 }],
+    }]));
+    expect(checkFixture(covTwoHours, { rowsBySymbol: rows, barsBySymbolAndTimeframe: unordered })
+      .some((e) => e.includes('[A][1h]') && e.includes('not strictly increasing'))).toBe(true);
+  });
+
+  it('passes a fixture that declares a different valid timeframe set', () => {
+    // Nothing in the gate is specific to 1h/1d — that pair is a fixture-level choice, not a rule.
+    const cov5 = { ...cov, barTimeframes: ['5m', '15m'] as const };
+    expect(checkFixture(cov5, {
+      rowsBySymbol: rowsWithVolume(),
+      barsBySymbolAndTimeframe: Object.fromEntries(cov.symbols.map((s) => [s, { '5m': FIVE_M_BARS, '15m': FIFTEEN_M_BARS }])),
+    })).toEqual([]);
+  });
+
+  it('FAILS a 5m fixture whose bars are the 1h aggregation under a 5m key', () => {
+    const cov5 = { ...cov, barTimeframes: ['5m', '15m'] as const };
+    const errs = checkFixture(cov5, {
+      rowsBySymbol: rowsWithVolume(),
+      // one bucket covering everything — right for 15m, wrong for 5m
+      barsBySymbolAndTimeframe: Object.fromEntries(cov.symbols.map((s) => [s, { '5m': FIFTEEN_M_BARS, '15m': FIFTEEN_M_BARS }])),
+    });
+    expect(errs.some((e) => e.includes('[A][5m]'))).toBe(true);
   });
 
   it('FAILS a bar whose OHLC is wrong even though its volume is right', () => {
@@ -276,6 +373,9 @@ describe('runFixtureVerification', () => {
 describe('runFixtureVerification: enforced fixture, end-to-end', () => {
   const GOLDEN = 'data/snapshots/fixtures/historical-golden';
   const SYMBOLS = ['AUSDT', 'BUSDT', 'CUSDT', 'DUSDT', 'HUSDT'];
+  // The one place the pair appears: what this fixture is authored to declare — and what the sidecar
+  // it writes must then hold the bundle to. The verifier itself knows no preferred set.
+  const E2E_TIMEFRAMES = ['1h', '1d'] as const;
 
   /** Real loadable snapshot in a temp tree: the committed golden bundle (full, schema-valid ops
    *  surface) with its rows re-keyed to exactly 5 symbols sharing one minute grid. */
@@ -291,7 +391,7 @@ describe('runFixtureVerification: enforced fixture, end-to-end', () => {
     // The golden's own bars/funding/OI/liquidations belong to ITS symbols and span ITS window, so
     // re-keying only the rows would leave the fixture self-inconsistent — which the gate now (
     // correctly) rejects. Derive every surface from the rows this fixture actually ships.
-    const historical = { ...golden.historical, ...deriveHistoricalSurfaces(rowsBySymbol as never), rowsBySymbol };
+    const historical = { ...golden.historical, ...deriveHistoricalSurfaces(rowsBySymbol as never, E2E_TIMEFRAMES), rowsBySymbol };
     const bundleStr = JSON.stringify({ ...golden, historical });
 
     const baseDir = mkdtempSync(join(tmpdir(), 'vf-e2e-'));
@@ -313,6 +413,7 @@ describe('runFixtureVerification: enforced fixture, end-to-end', () => {
       schemaVersion: 'fixture-coverage.1',
       period: { fromMs, toMs },
       symbols: SYMBOLS,
+      barTimeframes: E2E_TIMEFRAMES,
       totalGapBudgetMinutes: 0,
       maxConsecutiveGapMinutes: 0,
     }));

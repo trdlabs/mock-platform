@@ -6,6 +6,7 @@ import { intersectToCommonGrid, deriveHistoricalSurfaces, writeWfoFixture } from
 import { loadSnapshot } from '../../src/snapshot/loader.js';
 
 const M = 60_000;
+const TFS = ['1h', '1d'] as const;
 
 describe('intersectToCommonGrid', () => {
   it('keeps only minutes present in every symbol, within the window', () => {
@@ -34,7 +35,7 @@ describe('deriveHistoricalSurfaces', () => {
     // collapsed, so a re-written minute was summed into its bar twice (measured: BTCUSDT 1h at
     // 2026-07-03T13:00Z read 2243.652 against a row sum of 2156.813).
     const rows = { A: [row(0, { volume: 3 }), row(60_000, { volume: 4 }), row(120_000, { volume: 5 })] };
-    const bars = deriveHistoricalSurfaces(rows).barsBySymbolAndTimeframe.A!['1h']!;
+    const bars = deriveHistoricalSurfaces(rows, TFS).barsBySymbolAndTimeframe.A!['1h']!;
     expect(bars).toHaveLength(1);
     expect(bars[0]!.volume).toBe(12);
   });
@@ -44,20 +45,20 @@ describe('deriveHistoricalSurfaces', () => {
       row(0, { open: 10, high: 12, low: 9, close: 11 }),
       row(60_000, { open: 11, high: 20, low: 2, close: 15 }),
     ] };
-    expect(deriveHistoricalSurfaces(rows).barsBySymbolAndTimeframe.A!['1h']![0])
+    expect(deriveHistoricalSurfaces(rows, TFS).barsBySymbolAndTimeframe.A!['1h']![0])
       .toMatchObject({ open: 10, high: 20, low: 2, close: 15 });
   });
 
   it('emits funding/OI only for rows that carry them, at the row minute', () => {
     const rows = { A: [row(0), row(60_000, { funding_rate: 0.5, oi_total_usd: 42 })] };
-    const d = deriveHistoricalSurfaces(rows);
+    const d = deriveHistoricalSurfaces(rows, TFS);
     expect(d.fundingBySymbol.A).toEqual([{ tsMs: 60_000, symbol: 'A', rate: 0.5 }]);
     expect(d.openInterestBySymbol.A).toEqual([{ tsMs: 60_000, symbol: 'A', openInterestUsd: 42 }]);
   });
 
   it('expands liquidations per side and drops zero sides', () => {
     const rows = { A: [row(0, { liq_long_usd: 7, liq_short_usd: 0 }), row(60_000, { liq_long_usd: 0, liq_short_usd: 3 })] };
-    expect(deriveHistoricalSurfaces(rows).liquidationsBySymbol.A).toEqual([
+    expect(deriveHistoricalSurfaces(rows, TFS).liquidationsBySymbol.A).toEqual([
       { tsMs: 0, symbol: 'A', side: 'long', sizeUsd: 7 },
       { tsMs: 60_000, symbol: 'A', side: 'short', sizeUsd: 3 },
     ]);
@@ -67,7 +68,7 @@ describe('deriveHistoricalSurfaces', () => {
     // Regression: funding/OI/liquidations used to be carried over with a symbol filter only, so a
     // 42-day fixture shipped 50 days of them (measured: 54,630 OI entries before the window start).
     const rows = { A: [row(HOUR), row(HOUR + 60_000)] };
-    const d = deriveHistoricalSurfaces({ A: rows.A.map((r) => ({ ...r, oi_total_usd: 1, funding_rate: 1, liq_long_usd: 1 })) });
+    const d = deriveHistoricalSurfaces({ A: rows.A.map((r) => ({ ...r, oi_total_usd: 1, funding_rate: 1, liq_long_usd: 1 })) }, TFS);
     for (const list of [d.fundingBySymbol.A!, d.openInterestBySymbol.A!, d.liquidationsBySymbol.A!]) {
       for (const e of list) expect(e.tsMs).toBeGreaterThanOrEqual(HOUR);
     }
@@ -90,7 +91,7 @@ describe('writeWfoFixture (end-to-end)', () => {
 
     const out = join(mkdtempSync(join(tmpdir(), 'wfo-')), 'w42');
     const ranking = { probeWindow: { fromMs: 1, toMs: 2 }, turnoverSha256: 'abc', candidateCount: 9, primary: 'HUSDT', selected: [] };
-    const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, ranking });
+    const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, barTimeframes: TFS, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, ranking });
 
     // 1. loads through the full gate chain
     const built = loadSnapshot(out).bundle;
@@ -98,7 +99,7 @@ describe('writeWfoFixture (end-to-end)', () => {
 
     // 2. coverage.json comes verbatim from the flags
     const cov = JSON.parse(readFileSync(join(out, 'coverage.json'), 'utf8'));
-    expect(cov).toMatchObject({ schemaVersion: 'fixture-coverage.1', period: { fromMs, toMs }, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10 });
+    expect(cov).toMatchObject({ schemaVersion: 'fixture-coverage.1', period: { fromMs, toMs }, barTimeframes: ['1h', '1d'], totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10 });
     expect([...cov.symbols].sort()).toEqual([...symbols].sort());
 
     // 3. checksum entry matches the written bundle file

@@ -5,6 +5,8 @@ import { sha256Hex } from '../src/snapshot/checksums.js';
 import { bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 import type { SnapshotManifest } from '../src/contract/snapshot/manifest.js';
+import type { Timeframe } from '../src/contract/historical-read/dto.js';
+import { TF_MS, CONTRACT_TIMEFRAMES } from './verify_fixtures.js';
 
 export function intersectToCommonGrid<R extends { minute_ts: number }>(
   rowsBySymbol: Record<string, ReadonlyArray<R>>,
@@ -42,7 +44,10 @@ interface DerivedRow {
   liq_short_usd?: number | null;
 }
 
-const DERIVED_TIMEFRAMES: ReadonlyArray<readonly [string, number]> = [['1h', 3_600_000], ['1d', 86_400_000]];
+/** What `--bar-timeframes` uses when the flag is absent. A fixture-authoring default, not a rule:
+ *  the verifier holds a bundle to whatever its sidecar declares, so changing this changes what a
+ *  new fixture ships and declares together. */
+export const DEFAULT_BAR_TIMEFRAMES: ReadonlyArray<Timeframe> = ['1h', '1d'];
 
 /** Re-derive every historical surface from the FINAL row set, mirroring the exporter's
  *  `aggregateHistorical`. Pure; testable without parquet.
@@ -54,7 +59,10 @@ const DERIVED_TIMEFRAMES: ReadonlyArray<readonly [string, number]> = [['1h', 3_6
  *  Deriving from `filtered` makes every surface agree with the rows the fixture actually ships and
  *  puts them inside the declared window by construction rather than by a second filter that has to
  *  be remembered. */
-export function deriveHistoricalSurfaces<R extends DerivedRow>(rowsBySymbol: Record<string, R[]>): {
+export function deriveHistoricalSurfaces<R extends DerivedRow>(
+  rowsBySymbol: Record<string, R[]>,
+  timeframes: ReadonlyArray<Timeframe>,
+): {
   barsBySymbolAndTimeframe: Record<string, Record<string, Array<{ tsMs: number; open: number; high: number; low: number; close: number; volume: number }>>>;
   fundingBySymbol: Record<string, Array<{ tsMs: number; symbol: string; rate: number }>>;
   openInterestBySymbol: Record<string, Array<{ tsMs: number; symbol: string; openInterestUsd: number }>>;
@@ -68,7 +76,8 @@ export function deriveHistoricalSurfaces<R extends DerivedRow>(rowsBySymbol: Rec
   for (const [sym, unsorted] of Object.entries(rowsBySymbol)) {
     const rows = [...unsorted].sort((a, b) => a.minute_ts - b.minute_ts);
     barsBySymbolAndTimeframe[sym] = {};
-    for (const [tf, tfMs] of DERIVED_TIMEFRAMES) {
+    for (const tf of timeframes) {
+      const tfMs = TF_MS[tf];
       const buckets = new Map<number, { tsMs: number; open: number; high: number; low: number; close: number; volume: number }>();
       for (const r of rows) {
         const bts = Math.floor(r.minute_ts / tfMs) * tfMs;
@@ -114,14 +123,21 @@ interface SrcHistorical {
 export interface WriteWfoOpts {
   source: string; out: string; symbols: string[];
   fromMs: number; toMs: number;
+  /** Derived timeframes to build AND to declare in coverage.json — one input, so the fixture cannot
+   *  ship a set other than the one the gate will hold it to. */
+  barTimeframes: ReadonlyArray<Timeframe>;
   totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number;
   ranking?: unknown; // ranking-provenance object (from wfo-rank) — embedded verbatim into provenance
   dedupe?: unknown;  // dedupe report (from wfo-build-raw) — embedded verbatim into provenance
 }
 
 export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSize: number } {
-  const { source, out, symbols, fromMs, toMs, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking, dedupe } = opts;
+  const { source, out, symbols, fromMs, toMs, barTimeframes, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking, dedupe } = opts;
   if (symbols.length !== 5) throw new Error(`expected exactly 5 symbols, got ${symbols.length}`);
+  if (barTimeframes.length === 0) throw new Error('barTimeframes must not be empty');
+  if (new Set(barTimeframes).size !== barTimeframes.length) throw new Error(`barTimeframes has duplicates: ${barTimeframes.join(',')}`);
+  const unknownTf = barTimeframes.filter((t) => !CONTRACT_TIMEFRAMES.includes(t));
+  if (unknownTf.length) throw new Error(`barTimeframes not in the contract: ${unknownTf.join(',')} (allowed: ${CONTRACT_TIMEFRAMES.join(',')})`);
 
   const srcManifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as { versions: Record<string, string>; bundleRef: string };
   const src = loadSnapshot(source).bundle as unknown as { historical?: SrcHistorical; [k: string]: unknown };
@@ -135,7 +151,7 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
   // Every other surface is re-derived from `filtered`, so all of them agree with the shipped rows
   // and sit inside the declared window by construction. See deriveHistoricalSurfaces.
   const historical: SrcHistorical = {
-    ...deriveHistoricalSurfaces(filtered),
+    ...deriveHistoricalSurfaces(filtered, barTimeframes),
     rowsBySymbol: filtered,
   };
   const fixture = { ...src, historical };
@@ -162,6 +178,8 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
     schemaVersion: 'fixture-coverage.1',
     period: { fromMs, toMs },
     symbols: [...symbols].sort(),
+    // canonical order: by bucket size, so two runs that pass the same set write the same sidecar
+    barTimeframes: [...barTimeframes].sort((a, b) => TF_MS[a] - TF_MS[b]),
     totalGapBudgetMinutes,
     maxConsecutiveGapMinutes,
   }, null, 2));
@@ -217,6 +235,7 @@ function main(): void {
     source: arg('source'),
     out: arg('out'),
     symbols: arg('symbols').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
+    barTimeframes: (argMaybe('bar-timeframes')?.split(',').map((t) => t.trim()).filter(Boolean) as Timeframe[]) ?? DEFAULT_BAR_TIMEFRAMES,
     fromMs: Number(arg('from')),
     toMs: Number(arg('to')),
     totalGapBudgetMinutes: Number(arg('total-gap-budget')),
