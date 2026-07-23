@@ -29,7 +29,7 @@ export function renderEnvMd(doc: EnvSchemaDocument): string {
     '<!-- Дрейф-гейт: test/env/env-docs.test.ts. Машинный экспорт: `pnpm env:schema`. -->',
     '',
     `Контракт: \`env-schema.1\` (control-center docs/architecture/contracts/env-schema.md). ` +
-      `Единственная точка чтения \`process.env\` — \`${doc.generated_from}\`; невалидный env валит ` +
+      `Единственная точка чтения переменных окружения — \`${doc.generated_from}\`; невалидный env валит ` +
       `процесс на старте со списком всех ошибок разом.`,
     '',
     '| Имя | Тип | Обяз. | Дефолт | Secret | Flag | Описание |',

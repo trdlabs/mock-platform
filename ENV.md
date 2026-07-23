@@ -3,7 +3,7 @@
 <!-- СГЕНЕРИРОВАНО из src/env.ts командой `pnpm env:docs` — НЕ редактировать руками. -->
 <!-- Дрейф-гейт: test/env/env-docs.test.ts. Машинный экспорт: `pnpm env:schema`. -->
 
-Контракт: `env-schema.1` (control-center docs/architecture/contracts/env-schema.md). Единственная точка чтения `process.env` — `src/env.ts`; невалидный env валит процесс на старте со списком всех ошибок разом.
+Контракт: `env-schema.1` (control-center docs/architecture/contracts/env-schema.md). Единственная точка чтения переменных окружения — `src/env.ts`; невалидный env валит процесс на старте со списком всех ошибок разом.
 
 | Имя | Тип | Обяз. | Дефолт | Secret | Flag | Описание |
 | --- | --- | --- | --- | --- | --- | --- |
