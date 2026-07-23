@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 const SDK_PKG = '@trdlabs/sdk';
 /** The exact version the mock is pinned to. Bumping the dependency without bumping this
  *  constant (or vice versa) is a hard failure — the two must move together. */
-const EXPECTED_SDK_VERSION = '0.11.0';
+const EXPECTED_SDK_VERSION = '0.13.0';
 /** The ops-read contract version the mock's fixtures + compat gate pin. The SDK is the source of
  *  truth; this constant is the value we REQUIRE the published SDK to carry (drift = hard fail). */
 const EXPECTED_OPS_VERSION = 'ops.6';

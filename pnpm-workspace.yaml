@@ -5,3 +5,5 @@
 # is the decision that was never actually written down.
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@trdlabs/sdk@0.13.0'
