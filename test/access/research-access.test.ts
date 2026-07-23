@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { researchTokenAllowlist, auditResearchTool } from '../../src/access/research-access.js';
 
 describe('research access', () => {
-  it('parses MOCK_RESEARCH_TOKENS into a trimmed sha256 allowlist', () => {
-    expect(researchTokenAllowlist({ MOCK_RESEARCH_TOKENS: ' a , b ,' })).toEqual(['a', 'b']);
-    expect(researchTokenAllowlist({})).toEqual([]);
+  it('materialises the parsed MOCK_RESEARCH_TOKENS allowlist (csv trimming lives in src/env.ts)', () => {
+    expect(researchTokenAllowlist({ MOCK_RESEARCH_TOKENS: ['a', 'b'] })).toEqual(['a', 'b']);
+    expect(researchTokenAllowlist({ MOCK_RESEARCH_TOKENS: [] })).toEqual([]);
   });
   it('auditResearchTool writes to STDERR (never stdout) and never logs a token', () => {
     const errSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);

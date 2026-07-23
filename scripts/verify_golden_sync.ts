@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // verify_golden_sync — proves the vendored platform historical golden has not drifted.
 //
 //  HARD : sha256(local vendored copy) === recorded .sha256 (tamper detect).
@@ -16,19 +15,23 @@
 // vendored copy to drift and no sibling checkout to compile. The pin itself is gated by
 // verify_sdk_pin.ts. Only the golden remains cross-repo, hence the rename — the old name outlived
 // what the script does.
+//
+// Был .mjs на голом node; стал .ts под tsx, потому что PLATFORM_REPO теперь читается через
+// типизированный src/env.ts (env-catalog item 5) — единственную точку чтения окружения в репо.
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
+import { loadEnv } from '../src/env.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
 const GOLDEN = join(repoRoot, 'test/conformance/_vendored/platform-historical-golden.json');
 const GOLDEN_SHA_FILE = join(repoRoot, 'test/conformance/_vendored/platform-historical-golden.sha256');
 
-const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+const sha256 = (buf: Buffer | string): string => createHash('sha256').update(buf).digest('hex');
 
-function fail(msg) {
+function fail(msg: string): never {
   console.error(`verify_golden_sync: FAIL — ${msg}`);
   process.exit(1);
 }
@@ -36,7 +39,7 @@ function fail(msg) {
 // Sibling-relative, not an absolute machine path: a hardcoded
 // /home/.../projects/trading-platform once pointed at an unrelated stub directory, so the
 // cross-repo check below WARNed and skipped on every run instead of ever comparing anything.
-const PLATFORM = process.env.PLATFORM_REPO ?? resolve(repoRoot, '../platform');
+const PLATFORM = loadEnv().PLATFORM_REPO ?? resolve(repoRoot, '../platform');
 
 // --- HARD: vendored platform golden matches its recorded checksum ---
 if (!existsSync(GOLDEN)) fail(`vendored golden missing: ${GOLDEN}`);

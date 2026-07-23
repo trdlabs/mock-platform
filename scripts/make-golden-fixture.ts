@@ -24,6 +24,7 @@
  *   PLATFORM_GOLDEN=/path/to/MANIFEST.json pnpm exec tsx scripts/make-golden-fixture.ts
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { loadEnv } from '../src/env.js';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sha256Hex } from '../src/snapshot/checksums.js';
@@ -125,7 +126,7 @@ function buildBundle(
 }
 
 function main(): void {
-  const goldenPath = process.env.PLATFORM_GOLDEN ?? VENDORED_GOLDEN;
+  const goldenPath = loadEnv().PLATFORM_GOLDEN ?? VENDORED_GOLDEN;
   const rows = JSON.parse(readFileSync(goldenPath, 'utf8')) as CanonicalRowV2[];
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error(`platform golden at ${goldenPath} is not a non-empty array of rows`);

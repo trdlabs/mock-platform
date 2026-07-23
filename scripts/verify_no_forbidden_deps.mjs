@@ -5,7 +5,9 @@ import { readFileSync } from 'node:fs';
 // pinned exactly (shape enforced by scripts/verify_sdk_pin.ts). It used to be @trading-platform/sdk
 // consumed as a non-registry artifact (a vendored ./vendor/*.tgz, later a GitHub release-asset URL)
 // because no npm release existed; that is over, so the carve-outs those forms needed are gone.
-const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk', '@trdlabs/sdk']);
+// env-catalog item 5: zod админ контрактом env-schema.1 (control-center) как ЕДИНАЯ библиотека
+// типизированного env — src/env.ts исполняется в проде (Docker ставит --prod), поэтому runtime.
+const RUNTIME_ALLOWLIST = new Set(['hono', '@hono/node-server', '@hono/node-ws', 'ajv', '@modelcontextprotocol/sdk', '@trdlabs/sdk', 'zod']);
 // bare denylist tokens — the private platform runtime, db, and exchange SDKs.
 // NOTE: '@trading-platform' is intentionally NOT a bare token — the '@' prefix means the bare-token
 // regex below would not match it anyway. The whole scope is policed separately, and now with no
