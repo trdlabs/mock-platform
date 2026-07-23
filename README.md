@@ -24,6 +24,20 @@ MOCK_SNAPSHOT_REF=fixtures/2026-06-16-synthetic pnpm start
 curl -s localhost:8839/ops/discover
 ```
 
+## Environment (env-catalog)
+
+Все переменные окружения репо объявлены в одном месте — `src/env.ts` (zod-схема + метаданные;
+контракт `env-schema.1`, control-center `docs/architecture/contracts/env-schema.md`). Невалидный
+env валит процесс на старте со списком **всех** ошибок разом; тихих дефолтов для required нет.
+
+- `pnpm env:schema` — машинный экспорт документа `env-schema.1` в stdout (детерминированный JSON;
+  файл не коммитится — его захватывает агрегатор env-registry в control-center);
+- `pnpm env:docs` — перегенерирует [`ENV.md`](ENV.md) и `.env.example` из схемы (руками не
+  редактировать; дрейф ловит `test/env/env-docs.test.ts`);
+- чтение `process.env` вне `src/env.ts` — красный тест (`test/env/env-completeness.test.ts`);
+- секреты (`MOCK_RESEARCH_TOKEN`, `MOCK_SNAPSHOT_DB_URL`): в каталоге и примерах — только имя и
+  форма, значения живут вне репо (SOPS/age-контур, b2c-ops-hardening item 3).
+
 ## Surface A — Ops Read parity
 
 The mock advertises `ops.6` — the same contract version the platform declares

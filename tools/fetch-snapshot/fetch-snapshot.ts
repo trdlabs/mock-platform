@@ -50,6 +50,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 import { buildTradeEvidenceByTrade, type EvidenceTradeRow, type EvidenceLifecycleRow, type TradeEvidenceOut } from './trade-evidence-map.js';
+// Единственная точка чтения переменных окружения — src/env.ts (контракт env-schema.1, env-catalog item 5).
+import { loadEnv, type Env } from '../../src/env.js';
 import { classifyCloseReason } from '../../src/contract/ops-read/close-reason.js';
 
 // ──────────────────────────────────────────────────
@@ -178,6 +180,8 @@ interface Cfg {
   noTunnel: boolean;
   noParquet: boolean;
   dryRun: boolean;
+  /** $HOME из типизированного env — для tilde-экспансии --ssh-key (null, если не задан ОС). */
+  homeDir: string | null;
 }
 
 /** Env var carrying the Postgres URL. Named, exported, and asserted on by the tests so the one
@@ -253,7 +257,7 @@ export function resolveDbUrl(
   );
 }
 
-function parseArgs(): Cfg {
+function parseArgs(env: Env): Cfg {
   const args = process.argv.slice(2);
 
   function flag(name: string): boolean {
@@ -277,20 +281,21 @@ function parseArgs(): Cfg {
 
   return {
     vps: optMaybe('vps'),
-    dbUrl: resolveDbUrl(args, process.env),
+    dbUrl: resolveDbUrl(args, { [DB_URL_ENV]: env.MOCK_SNAPSHOT_DB_URL }),
     parquetRoot: optMaybe('parquet-root'),
     dateFrom: opt('from'),
     dateTo: opt('to'),
     symbols: optMaybe('symbols')?.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean) ?? [],
     ref: opt('ref'),
     mode: (optMaybe('mode') ?? 'replace') as 'replace' | 'add',
-    sshKey: opt('ssh-key', `${process.env['HOME'] ?? '~'}/.ssh/id_rsa`),
+    sshKey: opt('ssh-key', `${env.HOME ?? '~'}/.ssh/id_rsa`),
     sshPort: parseInt(opt('ssh-port', '22'), 10),
     tunnelPort: parseInt(opt('tunnel-port', '15432'), 10),
     parquetLocal: opt('parquet-local', '/tmp/mock-parquet'),
     noTunnel: flag('no-tunnel'),
     noParquet: flag('no-parquet'),
     dryRun: flag('dry-run'),
+    homeDir: env.HOME ?? null,
   };
 }
 
@@ -666,7 +671,7 @@ function datesInPeriod(tsFrom: number, tsTo: number): string[] {
 function rsyncParquet(cfg: Cfg, tsFrom: number, tsTo: number): void {
   mkdirSync(cfg.parquetLocal, { recursive: true });
   const keyPath = cfg.sshKey.startsWith('~')
-    ? join(process.env['HOME'] ?? '', cfg.sshKey.slice(1))
+    ? join(cfg.homeDir ?? '', cfg.sshKey.slice(1))
     : cfg.sshKey;
   const sshBase = existsSync(keyPath)
     ? `ssh -i ${keyPath} -p ${cfg.sshPort} -o StrictHostKeyChecking=no`
@@ -1225,7 +1230,7 @@ function patchUrlForTunnel(dbUrl: string, tunnelPort: number): string {
 // ──────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const cfg = parseArgs();
+  const cfg = parseArgs(loadEnv());
   const [tsFrom, tsTo] = periodToMs(cfg.dateFrom, cfg.dateTo);
 
   console.log(`[config] Period: ${cfg.dateFrom} → ${cfg.dateTo} (${tsFrom}…${tsTo})`);

@@ -15,7 +15,9 @@
     "verify:no-forbidden-deps": "node scripts/verify_no_forbidden_deps.mjs",
     "verify:no-secrets": "tsx scripts/verify_no_secrets.ts",
     "verify:sdk-pin": "tsx scripts/verify_sdk_pin.ts",
-    "verify:golden-sync": "node scripts/verify_golden_sync.mjs",
+    "verify:golden-sync": "tsx scripts/verify_golden_sync.ts",
+    "env:schema": "tsx scripts/env-schema.ts",
+    "env:docs": "tsx scripts/env-docs.ts",
     "verify:fixtures": "tsx scripts/verify_fixtures.ts",
     "check": "pnpm typecheck && pnpm verify:contract-isolation && pnpm test",
     "check:ci": "pnpm check && pnpm verify:no-forbidden-deps && pnpm verify:no-secrets && pnpm verify:sdk-pin && pnpm verify:golden-sync && pnpm verify:fixtures",
@@ -31,7 +33,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@trdlabs/sdk": "0.13.0",
     "ajv": "^8.20.0",
-    "hono": "^4.12.0"
+    "hono": "^4.12.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

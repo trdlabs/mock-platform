@@ -1,15 +1,15 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { authorize } from '../access/auth.js';
-import { DEFAULT_SNAPSHOT_DIR, DEFAULT_SNAPSHOT_REF } from '../access/config.js';
+import { loadEnv } from '../env.js';
 import { researchTokenAllowlist, auditResearchTool } from '../access/research-access.js';
 import { openSnapshot } from '../snapshot/registry.js';
 import { buildResearchServer } from '../research-read/mcp/server.js';
 import { MCP031_CONTRACT_VERSION } from '../contract/research-read/mcp/version.js';
 
 async function main(): Promise<void> {
-  const env = process.env;
-  const snapshotDir = env.MOCK_SNAPSHOT_DIR ?? DEFAULT_SNAPSHOT_DIR;
-  const snapshotRef = env.MOCK_SNAPSHOT_REF ?? DEFAULT_SNAPSHOT_REF;
+  const env = loadEnv(); // fail-fast: невалидный env валит старт со списком всех ошибок (в stderr)
+  const snapshotDir = env.MOCK_SNAPSHOT_DIR;
+  const snapshotRef = env.MOCK_SNAPSHOT_REF;
 
   // Fail-closed startup auth (reuses Surface A's sha256 allowlist semantics; empty = spawn-trusted).
   const allowlist = researchTokenAllowlist(env);

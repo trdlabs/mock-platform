@@ -1,3 +1,9 @@
+import { parseEnv, type Env } from '../env.js';
+
+// Литералы дефолтов переехали в src/env.ts (единая схема env-catalog); реэкспорт сохраняет
+// исторический импорт-путь для entrypoint'ов и тестов.
+export { DEFAULT_SNAPSHOT_DIR, DEFAULT_SNAPSHOT_REF } from '../env.js';
+
 export interface MockConfig {
   readonly port: number;
   readonly bind: string;
@@ -10,34 +16,29 @@ export interface MockConfig {
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 
-/** The code-default snapshot the mock falls back to when MOCK_SNAPSHOT_REF is unset: the T1
- *  native-1m SSOT fixture. Exported so every entry point shares ONE literal — a second hardcoded
- *  copy is how the research gateway silently kept serving the 2024-era bars-only synthetic fixture. */
-export const DEFAULT_SNAPSHOT_DIR = './data/snapshots';
-export const DEFAULT_SNAPSHOT_REF = 'fixtures/2026-06-22-to-2026-06-28-vps';
-
-export function loadMockConfig(env: Record<string, string | undefined>): MockConfig {
-  const bind = env.MOCK_OPS_BIND ?? '127.0.0.1';
-  const port = Number(env.MOCK_OPS_PORT ?? '8839');
-  const tokenAllowlist = (env.MOCK_OPS_TOKENS ?? '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
+/** Кросс-полевые правила поверх типизированного env (per-var валидация уже в src/env.ts). */
+export function mockConfigFromEnv(env: Env): MockConfig {
+  const bind = env.MOCK_OPS_BIND;
+  const tokenAllowlist = env.MOCK_OPS_TOKENS;
 
   if (!LOOPBACK.has(bind) && tokenAllowlist.length === 0) {
     throw new Error(
       `non-loopback bind '${bind}' requires MOCK_OPS_TOKENS (sha256-hex allowlist) — refusing to start anonymously`,
     );
   }
-  if (!Number.isInteger(port) || port <= 0) throw new Error(`invalid MOCK_OPS_PORT '${env.MOCK_OPS_PORT}'`);
-
-  const replayMode = (env.MOCK_REPLAY_MODE ?? 'loop');
-  if (replayMode !== 'once' && replayMode !== 'loop') throw new Error(`invalid MOCK_REPLAY_MODE '${replayMode}'`);
-  const replaySpeed = Number(env.MOCK_REPLAY_SPEED ?? '1');
-  if (!(replaySpeed > 0)) throw new Error(`invalid MOCK_REPLAY_SPEED '${env.MOCK_REPLAY_SPEED}' (must be > 0)`);
 
   return {
-    port, bind, tokenAllowlist,
-    snapshotDir: env.MOCK_SNAPSHOT_DIR ?? DEFAULT_SNAPSHOT_DIR,
-    snapshotRef: env.MOCK_SNAPSHOT_REF ?? DEFAULT_SNAPSHOT_REF,
-    replayMode, replaySpeed,
+    port: env.MOCK_OPS_PORT,
+    bind,
+    tokenAllowlist,
+    snapshotDir: env.MOCK_SNAPSHOT_DIR,
+    snapshotRef: env.MOCK_SNAPSHOT_REF,
+    replayMode: env.MOCK_REPLAY_MODE,
+    replaySpeed: env.MOCK_REPLAY_SPEED,
   };
+}
+
+/** Историческая сигнатура (сырой env-record): parseEnv + кросс-полевые правила. */
+export function loadMockConfig(env: Record<string, string | undefined>): MockConfig {
+  return mockConfigFromEnv(parseEnv(env));
 }

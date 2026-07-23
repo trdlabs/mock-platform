@@ -1,8 +1,10 @@
 import type { AuditRecord } from './audit.js';
+import type { Env } from '../env.js';
 
-/** sha256-hex allowlist for the research gateway (mirror of Surface A's MOCK_OPS_TOKENS). Empty = spawn-trusted. */
-export function researchTokenAllowlist(env: Record<string, string | undefined>): string[] {
-  return (env.MOCK_RESEARCH_TOKENS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+/** sha256-hex allowlist for the research gateway (mirror of Surface A's MOCK_OPS_TOKENS).
+ *  Empty = spawn-trusted. csv-парсинг (trim, отбрасывание пустых) живёт в src/env.ts. */
+export function researchTokenAllowlist(env: Pick<Env, 'MOCK_RESEARCH_TOKENS'>): string[] {
+  return [...env.MOCK_RESEARCH_TOKENS];
 }
 
 /** Redacted audit to STDERR — stdout is reserved for JSON-RPC framing on the stdio gateway.
