@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { checkSpecifier } from '../../scripts/verify_sdk_pin.js';
 
-const PINNED = '0.11.0';
+const PINNED = '0.13.0';
 const NOT_EXACT = /is not an exact npm version/;
 
 // The mock consumed the SDK as a non-registry artifact for its whole history — first a vendored
