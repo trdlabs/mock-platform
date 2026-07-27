@@ -165,6 +165,25 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
   for (const s of symbols) rawRows[s] = (h.rowsBySymbol[s] ?? []).length;
 
   const { grid, filtered, perSymbol } = intersectToCommonGrid(h.rowsBySymbol, symbols, fromMs, toMs);
+  // Independent of whatever selector produced this window. The probe and the
+  // fixture are separate invocations with separate --symbols and --from/--to,
+  // so a window chosen for one symbol set can be handed to another that shares
+  // no minute with it. Without this the writer happily produces a fixture with
+  // zero rows and records `commonGridSize: 0` in provenance — an artifact that
+  // loads, verifies, and measures nothing, which is far worse than a refusal.
+  //
+  // Placed before ANY write, so a refusal leaves no half-authored directory
+  // somebody may later pick up as a fixture.
+  if (grid.length === 0) {
+    const inWindow = symbols.map((s) => `${s}=${perSymbol[s]!.inWindow}`).join(', ');
+    throw new Error(
+      `empty common grid: no minute is present in all ${symbols.length} symbols within ` +
+        `[${fromMs}, ${toMs}) — rows in window per symbol: ${inWindow}. ` +
+        'A fixture with zero rows is not a narrower fixture, it is an empty one: it loads, it ' +
+        'verifies, and it measures nothing. Widen the window, drop the symbol that does not ' +
+        'overlap, or re-run the probe for THIS symbol set — do not lower a budget.',
+    );
+  }
   // Every other surface is re-derived from `filtered`, so all of them agree with the shipped rows
   // and sit inside the declared window by construction. See deriveHistoricalSurfaces.
   const historical: SrcHistorical = {

@@ -38,3 +38,39 @@ describe('selectWfoWindow', () => {
     expect(selectWfoWindow(r, ['A', 'B'], probeFrom, probeTo, 1, 5, 5)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Empty intersection is not a "narrow window" — it is no window at all.
+//
+// The two budgets answer "how much of this window is missing"; neither answers
+// "is anything here". With an empty grid `totalGap` and `maxConsecutiveGap`
+// both report the full span, so ordinary budgets do reject it — but a budget
+// wide enough to tolerate the span (an operator loosening it to "just get a
+// window") turns the check off entirely and the selector hands back a window
+// over which no symbol shares a single minute. That window then flows into
+// make-wfo-fixture, which writes a fixture with zero rows and records
+// commonGridSize: 0 as if it were a result.
+// ---------------------------------------------------------------------------
+describe('selectWfoWindow: an empty common grid is never a window', () => {
+  const MIN = 60_000;
+  const DAY = 86_400_000;
+
+  it('returns null for disjoint symbols even when the budgets would tolerate the whole span', () => {
+    // A on even minutes of day 0, B on odd minutes of day 1 — no shared minute anywhere.
+    const rows = {
+      A: Array.from({ length: 100 }, (_, i) => ({ minute_ts: i * 2 * MIN })),
+      B: Array.from({ length: 100 }, (_, i) => ({ minute_ts: DAY + (i * 2 + 1) * MIN })),
+    };
+    const win = selectWfoWindow(rows, ['A', 'B'], 0, 3 * DAY, 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+    expect(win).toBeNull();
+  });
+
+  it('still returns a window when the symbols genuinely share minutes', () => {
+    const rows = {
+      A: Array.from({ length: 1440 }, (_, i) => ({ minute_ts: i * MIN })),
+      B: Array.from({ length: 1440 }, (_, i) => ({ minute_ts: i * MIN })),
+    };
+    const win = selectWfoWindow(rows, ['A', 'B'], 0, DAY, 1, 0, 0);
+    expect(win).toEqual({ fromMs: 0, toMs: DAY });
+  });
+});
