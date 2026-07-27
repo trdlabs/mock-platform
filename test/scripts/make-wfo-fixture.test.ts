@@ -199,6 +199,23 @@ describe('writeWfoFixture — symbol count is an input, not a constant', () => {
     expect(prov.note).not.toContain('5 source series');
   });
 
+  it('refuses a fixture too large to load, before anything reaches disk', () => {
+    // Ceiling passed explicitly so the test need not build a 512 MiB bundle. The real default is
+    // V8's max string length, measured to cap a 42-day fixture at ~15 symbols.
+    const symbols = pick(3);
+    const { fromMs, toMs } = windowFor(symbols);
+    const out = join(mkdtempSync(join(tmpdir(), 'wfo-big-')), 'wbig');
+
+    expect(() => writeWfoFixture({
+      source: SOURCE, out, symbols, fromMs, toMs, barTimeframes: TFS,
+      totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, maxDecodedBytes: 1024,
+    })).toThrow(/too large to load/i);
+
+    // The whole point of failing at authoring time: no partial artifact is left behind.
+    expect(existsSync(join(out, 'manifest.json'))).toBe(false);
+    expect(existsSync(join(out, 'coverage.json'))).toBe(false);
+  });
+
   it('rankingTieBreak is derived from the ranking evidence, not asserted about it', () => {
     const symbols = pick(4);
     const ranking = {
