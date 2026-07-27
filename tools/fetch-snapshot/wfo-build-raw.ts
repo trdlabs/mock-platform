@@ -137,7 +137,7 @@ async function main(): Promise<void> {
   // Hand the dedup outcome to make-wfo-fixture, which records it in the committed provenance.json —
   // the resolution must survive into the artifact, not just the build log.
   if (dedupeReport) writeFileSync(join(out, 'dedupe.json'), JSON.stringify(dedupeReport, null, 2));
-  console.log(`raw 5-symbol snapshot written to ${out} (${symbols.join(', ')})`);
+  console.log(`raw ${symbols.length}-symbol snapshot written to ${out} (${symbols.join(', ')})`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
