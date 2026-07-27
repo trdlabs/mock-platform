@@ -84,14 +84,26 @@ describe('writeWfoFixture (end-to-end)', () => {
     const src = loadSnapshot(SOURCE).bundle;
     const rows = src.historical!.rowsBySymbol!;
     const symbols = Object.keys(rows).sort().slice(0, 5);
-    // a small window covering the first ~10 minutes shared by these symbols
-    const firstTs = Math.min(...symbols.map((s) => rows[s]![0]!.minute_ts));
+    // A window the symbols genuinely SHARE: anchored at the LATEST first row,
+    // so every series has data from there.
+    //
+    // It used to be anchored at the EARLIEST first row — which put ARXUSDT
+    // (whose series starts later) at zero rows in the window, so the
+    // intersection was empty and this test asserted a fixture of ZERO rows.
+    // Every check below then passed vacuously: 0 === 0 for each symbol, and
+    // "no surface outside the window" is trivially true when there are no
+    // surfaces. The empty-intersection gate is what surfaced it.
+    const firstTs = Math.max(...symbols.map((s) => rows[s]![0]!.minute_ts));
     const fromMs = firstTs;
     const toMs = firstTs + 10 * M;
 
     const out = join(mkdtempSync(join(tmpdir(), 'wfo-')), 'w42');
     const ranking = { probeWindow: { fromMs: 1, toMs: 2 }, turnoverSha256: 'abc', candidateCount: 9, primary: 'HUSDT', selected: [] };
     const res = writeWfoFixture({ source: SOURCE, out, symbols, fromMs, toMs, barTimeframes: TFS, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, ranking });
+
+    // 0. the fixture is not empty — without this every assertion below can
+    //    pass on zero rows, which is how the previous window went unnoticed.
+    expect(res.gridSize).toBeGreaterThan(0);
 
     // 1. loads through the full gate chain
     const built = loadSnapshot(out).bundle;
@@ -231,5 +243,33 @@ describe('writeWfoFixture — symbol count is an input, not a constant', () => {
     // a sentence the fixture cannot back up.
     const bare = JSON.parse(readFileSync(join(write(symbols), 'provenance.json'), 'utf8'));
     expect(bare).not.toHaveProperty('rankingTieBreak');
+  });
+});
+
+describe('writeWfoFixture: refuses an empty intersection', () => {
+  const SRC = 'data/snapshots/fixtures/2026-06-22-to-2026-06-28-vps';
+
+  it('throws instead of writing a zero-row fixture, and leaves nothing behind', () => {
+    const src = loadSnapshot(SRC).bundle;
+    const rows = src.historical!.rowsBySymbol!;
+    const symbols = Object.keys(rows).sort().slice(0, 2);
+    // A window strictly BEFORE the source's data: every symbol is empty in it,
+    // so the intersection is empty too.
+    const firstTs = Math.min(...symbols.map((s) => rows[s]![0]!.minute_ts));
+    const out = join(mkdtempSync(join(tmpdir(), 'wfo-empty-')), 'w42');
+
+    expect(() =>
+      writeWfoFixture({
+        source: SRC, out, symbols,
+        fromMs: firstTs - 10 * M, toMs: firstTs,
+        barTimeframes: TFS, totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10,
+      }),
+    ).toThrow(/no minute is present in all 2 symbols/);
+
+    // Fail BEFORE anything reaches disk: a half-written fixture directory reads
+    // as an artifact somebody may pick up.
+    expect(existsSync(join(out, 'manifest.json'))).toBe(false);
+    expect(existsSync(join(out, 'provenance.json'))).toBe(false);
+    expect(existsSync(join(out, 'coverage.json'))).toBe(false);
   });
 });

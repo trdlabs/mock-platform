@@ -34,6 +34,16 @@ export function selectWfoWindow(
   for (let toMs = probeTo; toMs - span >= probeFrom; toMs -= DAY_MS) {
     const fromMs = toMs - span;
     const { grid } = intersectToCommonGrid(rowsBySymbol, symbols, fromMs, toMs);
+    // Structural, and deliberately ahead of the budgets. The two budgets answer
+    // "how much of this window is missing"; neither answers "is anything here".
+    // With an empty grid they both report the full span, so ordinary budgets do
+    // reject it — but a budget widened to "just get a window" turns that
+    // accident of arithmetic off, and the selector hands back a window over
+    // which no symbol shares a single minute. Downstream that becomes a fixture
+    // with zero rows whose provenance records commonGridSize: 0 as a result.
+    // An empty intersection is not a narrow window; it is no window at all, and
+    // no budget may authorise it.
+    if (grid.length === 0) continue;
     if (totalGap(grid, fromMs, toMs) <= totalGapBudgetMinutes && maxConsecutiveGap(grid, fromMs, toMs) <= maxConsecutiveGapMinutes) {
       return { fromMs, toMs };
     }
