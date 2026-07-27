@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sha256Hex } from '../src/snapshot/checksums.js';
-import { bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
+import { assertBundleFitsInMemory, bundleRefForByteLength, encodeBundleFileBytes, decodeBundleFileBytes } from '../src/snapshot/bundle-io.js';
 import { loadSnapshot } from '../src/snapshot/loader.js';
 import type { SnapshotManifest } from '../src/contract/snapshot/manifest.js';
 import type { Timeframe } from '../src/contract/historical-read/dto.js';
@@ -129,6 +129,9 @@ export interface WriteWfoOpts {
   totalGapBudgetMinutes: number; maxConsecutiveGapMinutes: number;
   ranking?: unknown; // ranking-provenance object (from wfo-rank) — embedded verbatim into provenance
   dedupe?: unknown;  // dedupe report (from wfo-build-raw) — embedded verbatim into provenance
+  /** Decoded-size ceiling of the runtime that will LOAD this fixture (default: V8's max string
+   *  length, what `loadSnapshot` actually hits). Lower it when authoring for a tighter rig. */
+  maxDecodedBytes?: number;
 }
 
 /** The one sentence in provenance that explains HOW the non-primary symbols were picked, rendered
@@ -170,6 +173,9 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
   };
   const fixture = { ...src, historical };
   const bundleBytes = Buffer.from(JSON.stringify(fixture), 'utf8');
+  // Before anything reaches disk: a fixture too wide to load is caught at authoring time, where
+  // the operator can still change N, rather than after writing a multi-GB artifact.
+  assertBundleFitsInMemory(bundleBytes.length, `${out} (${symbols.length} symbols)`, opts.maxDecodedBytes);
   const bundleRef = bundleRefForByteLength(bundleBytes.length);
   const encoded = encodeBundleFileBytes(bundleBytes, bundleRef);
 
