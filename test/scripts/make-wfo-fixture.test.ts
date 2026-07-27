@@ -150,3 +150,69 @@ describe('writeWfoFixture (end-to-end)', () => {
     }
   });
 });
+
+// The authoring pipeline used to hard-throw on anything but 5 symbols, which is why the only WFO
+// tier that ever existed is 5 wide. That width is a research choice (how many symbols a
+// distribution is measured over), not a property of the fixture format — the 2026-07-27 battery
+// calibration could only observe ONE trading symbol because of it.
+describe('writeWfoFixture — symbol count is an input, not a constant', () => {
+  const SOURCE = 'data/snapshots/fixtures/2026-06-22-to-2026-06-28-vps';
+  const windowFor = (symbols: string[]) => {
+    const rows = loadSnapshot(SOURCE).bundle.historical!.rowsBySymbol!;
+    const firstTs = Math.max(...symbols.map((s) => rows[s]![0]!.minute_ts));
+    return { fromMs: firstTs, toMs: firstTs + 10 * M };
+  };
+  const pick = (n: number) => Object.keys(loadSnapshot(SOURCE).bundle.historical!.rowsBySymbol!).sort().slice(0, n);
+  const write = (symbols: string[], over: Record<string, unknown> = {}) => {
+    const { fromMs, toMs } = windowFor(symbols);
+    const out = join(mkdtempSync(join(tmpdir(), 'wfo-n-')), 'wn');
+    writeWfoFixture({
+      source: SOURCE, out, symbols, fromMs, toMs, barTimeframes: TFS,
+      totalGapBudgetMinutes: 10, maxConsecutiveGapMinutes: 10, ...over,
+    });
+    return out;
+  };
+
+  it('writes a loadable 9-symbol fixture whose sidecar declares all 9', () => {
+    const symbols = pick(9);
+    const out = write(symbols);
+
+    expect(Object.keys(loadSnapshot(out).bundle.historical!.rowsBySymbol!).sort()).toEqual([...symbols].sort());
+    expect(JSON.parse(readFileSync(join(out, 'coverage.json'), 'utf8')).symbols).toEqual([...symbols].sort());
+  });
+
+  it('writes a loadable single-symbol fixture (the intersection is then trivial)', () => {
+    const symbols = pick(1);
+    expect(JSON.parse(readFileSync(join(write(symbols), 'coverage.json'), 'utf8')).symbols).toEqual(symbols);
+  });
+
+  it('still rejects an empty symbol list and duplicates — the sidecar demands a unique non-empty set', () => {
+    expect(() => write([])).toThrow(/at least one symbol/i);
+    const [a] = pick(1);
+    expect(() => write([a!, a!])).toThrow(/duplicate/i);
+  });
+
+  it('provenance describes the actual width, never a hardcoded 5', () => {
+    const symbols = pick(3);
+    const prov = JSON.parse(readFileSync(join(write(symbols), 'provenance.json'), 'utf8'));
+    expect(prov.note).toContain('3');
+    expect(prov.note).not.toContain('5 source series');
+  });
+
+  it('rankingTieBreak is derived from the ranking evidence, not asserted about it', () => {
+    const symbols = pick(4);
+    const ranking = {
+      probeWindow: { fromMs: 1, toMs: 2 }, turnoverSha256: 'abc', candidateCount: 9, primary: symbols[0],
+      selected: symbols.map((s, i) => ({ symbol: s, rank: i, turnover: 1 })),
+    };
+    const prov = JSON.parse(readFileSync(join(write(symbols, { ranking }), 'provenance.json'), 'utf8'));
+    // 4 selected = primary + top-3
+    expect(prov.rankingTieBreak).toContain('top-3');
+    expect(prov.rankingTieBreak).toContain(symbols[0]!);
+
+    // Without ranking evidence there is nothing to describe — the field must be absent rather than
+    // a sentence the fixture cannot back up.
+    const bare = JSON.parse(readFileSync(join(write(symbols), 'provenance.json'), 'utf8'));
+    expect(bare).not.toHaveProperty('rankingTieBreak');
+  });
+});

@@ -48,7 +48,10 @@ const COVERAGE_SCHEMA = {
         toMs: { type: 'integer', minimum: 0, multipleOf: MINUTE_MS },
       },
     },
-    symbols: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5, uniqueItems: true },
+    // Width is the fixture's own choice, declared here and held to the bundle by the gate below —
+    // a fixed cardinality would make the gate an opinion about research design rather than an
+    // integrity check, and it left the authoring pipeline unable to produce any width but 5.
+    symbols: { type: 'array', items: { type: 'string' }, minItems: 1, uniqueItems: true },
     barTimeframes: { type: 'array', items: { enum: CONTRACT_TIMEFRAMES }, minItems: 1, uniqueItems: true },
     totalGapBudgetMinutes: { type: 'integer', minimum: 0 },
     maxConsecutiveGapMinutes: { type: 'integer', minimum: 0 },
