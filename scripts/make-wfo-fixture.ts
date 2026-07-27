@@ -131,9 +131,23 @@ export interface WriteWfoOpts {
   dedupe?: unknown;  // dedupe report (from wfo-build-raw) — embedded verbatim into provenance
 }
 
+/** The one sentence in provenance that explains HOW the non-primary symbols were picked, rendered
+ *  from the ranking evidence the caller supplied. Returns undefined when there is no evidence — or
+ *  when the evidence names no selection — so provenance never asserts a rule nothing backs. */
+function describeTieBreak(ranking: unknown): string | undefined {
+  if (ranking === null || typeof ranking !== 'object') return undefined;
+  const r = ranking as { primary?: unknown; selected?: unknown };
+  if (typeof r.primary !== 'string' || !Array.isArray(r.selected) || r.selected.length < 1) return undefined;
+  return `top-${r.selected.length - 1} by summed 1m turnover excl. ${r.primary}, ties by symbol ASC`;
+}
+
 export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSize: number } {
   const { source, out, symbols, fromMs, toMs, barTimeframes, totalGapBudgetMinutes, maxConsecutiveGapMinutes, ranking, dedupe } = opts;
-  if (symbols.length !== 5) throw new Error(`expected exactly 5 symbols, got ${symbols.length}`);
+  // Width is an input: how many symbols a fixture spans is a research choice (over how many series
+  // a distribution is measured), not a property of the format. Only the two things the sidecar
+  // schema itself demands are enforced here — non-empty and unique.
+  if (symbols.length < 1) throw new Error('expected at least one symbol, got none');
+  if (new Set(symbols).size !== symbols.length) throw new Error(`symbols has duplicates: ${symbols.join(',')}`);
   if (barTimeframes.length === 0) throw new Error('barTimeframes must not be empty');
   if (new Set(barTimeframes).size !== barTimeframes.length) throw new Error(`barTimeframes has duplicates: ${barTimeframes.join(',')}`);
   const unknownTf = barTimeframes.filter((t) => !CONTRACT_TIMEFRAMES.includes(t));
@@ -186,14 +200,18 @@ export function writeWfoFixture(opts: WriteWfoOpts): { bundleRef: string; gridSi
 
   // provenance.json — descriptive; hash is over the RAW pre-gzip source bundle bytes
   const rawSourceBytes = decodeBundleFileBytes(readFileSync(join(source, srcManifest.bundleRef)), srcManifest.bundleRef);
+  const tieBreak = describeTieBreak(ranking);
   writeFileSync(join(out, 'provenance.json'), JSON.stringify({
-    note: 'rows filtered to the intersection of the 5 source series',
+    note: `rows filtered to the intersection of the ${symbols.length} source series`,
     rawSourceRef: source,
     rawSourceBundleSha256: sha256Hex(rawSourceBytes),
     window: { fromMs, toMs },
     commonGridSize: grid.length,
-    rankingTieBreak: 'top-4 by summed 1m turnover excl. HUSDT, ties by symbol ASC',
-    // proves WHY these 4 were chosen: turnover-map hash, candidate count, selected+rank+turnover, probe window
+    // Describes the ranking that actually happened, read off the evidence — never a fixed sentence.
+    // Absent when no ranking evidence was supplied: there is then nothing to describe, and a claim
+    // the fixture cannot back up is worse than a missing field.
+    ...(tieBreak !== undefined ? { rankingTieBreak: tieBreak } : {}),
+    // proves WHY the non-primary symbols were chosen: turnover-map hash, candidate count, selected+rank+turnover, probe window
     ...(ranking !== undefined ? { ranking } : {}),
     // proves HOW same-minute re-writes in the raw parquet were resolved, and how many there were
     ...(dedupe !== undefined ? { dedupe } : {}),

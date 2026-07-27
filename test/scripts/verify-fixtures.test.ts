@@ -21,8 +21,15 @@ describe('validateCoverageDoc', () => {
   it('rejects the wrong schemaVersion', () => {
     expect(validateCoverageDoc({ ...ok, schemaVersion: 'fixture-coverage.2' }).length).toBeGreaterThan(0);
   });
-  it('rejects a symbol list that is not exactly 5 unique', () => {
-    expect(validateCoverageDoc({ ...ok, symbols: ['A', 'B', 'C', 'D'] }).length).toBeGreaterThan(0);
+  // The sidecar declares WHICH symbols a fixture ships; the gate's job is declaration == actual,
+  // not policing how many symbols a research fixture chose. A fixed cardinality of 5 made the whole
+  // authoring pipeline structurally unable to produce any other width — see the wide-snapshot work.
+  it('accepts any non-empty unique symbol list', () => {
+    expect(validateCoverageDoc({ ...ok, symbols: ['AUSDT'] })).toEqual([]);
+    expect(validateCoverageDoc({ ...ok, symbols: Array.from({ length: 24 }, (_, i) => `S${i}USDT`) })).toEqual([]);
+  });
+  it('rejects an empty or duplicated symbol list', () => {
+    expect(validateCoverageDoc({ ...ok, symbols: [] }).length).toBeGreaterThan(0);
     expect(validateCoverageDoc({ ...ok, symbols: ['A', 'A', 'C', 'D', 'E'] }).length).toBeGreaterThan(0);
   });
   it('rejects a negative or non-integer budget', () => {
