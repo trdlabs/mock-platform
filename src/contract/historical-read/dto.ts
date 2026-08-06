@@ -62,6 +62,12 @@ export interface HistoricalResourceDescriptor {
   readonly pagination: { readonly cursor: true; readonly maxPageItems: number } | null;
   readonly fields: readonly string[];
   readonly availability: HistoricalResourceAvailability;
+  /**
+   * 100 (Д1) — закрытый словарь видов, принимаемых фильтром `kinds`. Только у
+   * ресурсов, поддерживающих проекцию: объявить фильтр и не сказать, какие
+   * значения допустимы, значит заставить потребителя угадывать словарь по 400-кам.
+   */
+  readonly kinds?: readonly string[];
 }
 
 export interface HistoricalCapabilities {

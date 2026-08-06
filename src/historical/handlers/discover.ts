@@ -1,6 +1,7 @@
 import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
 import type { HistoricalCapabilityDescriptor, HistoricalCapabilities, HistoricalResourceDescriptor, Timeframe } from '../../contract/historical-read/dto.js';
 import { HISTORICAL_READ_CONTRACT_VERSION } from '../../contract/historical-read/version.js';
+import { HISTORICAL_PROJECTION_KINDS } from '../../contract/historical-read/projection-kinds.js';
 import { MAX_PAGE } from '../../ops/pagination.js';
 import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
 
@@ -14,9 +15,10 @@ const CAPABILITIES: HistoricalCapabilities = {
 const RESOURCES: readonly HistoricalResourceDescriptor[] = [
   {
     name: 'rows',
-    supportedFilters: ['symbols', 'fromMs', 'toMs'],
+    supportedFilters: ['symbols', 'fromMs', 'toMs', 'kinds'],
     pagination: { cursor: true, maxPageItems: MAX_PAGE },
     fields: [],
+    kinds: [...HISTORICAL_PROJECTION_KINDS],
     availability: 'available',
   },
   {

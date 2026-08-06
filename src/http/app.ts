@@ -94,11 +94,15 @@ export function createApp(deps: AppDeps) {
     const fromMs = toNum(c.req.query('fromMs'));
     const toMs = toNum(c.req.query('toMs'));
     const limit = toNum(c.req.query('limit'));
+    // 100 (Д1): kinds — CSV, как и symbols. Пустая строка = параметра нет (все виды),
+    // непустая — проверяется обработчиком и незнакомое значение даёт 400.
+    const kinds = (c.req.query('kinds') ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     return respond(c, handleRows(bundle, {
       symbols,
       ...(fromMs !== undefined ? { fromMs } : {}),
       ...(toMs !== undefined ? { toMs } : {}),
       ...(limit !== undefined ? { limit } : {}),
+      ...(kinds.length > 0 ? { kinds } : {}),
     }, now(), c.req.query('cursor')));
   });
   app.get('/historical/coverage', (c) => c.json(handleHistoricalCoverage(bundle, now()), 200));

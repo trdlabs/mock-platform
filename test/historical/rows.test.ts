@@ -52,7 +52,10 @@ function isPage(r: RowsPage | { category: string }): r is RowsPage {
 
 /** Drain every page, following nextCursor — the order under test is a property of the
  *  whole stream, not of the first page. */
-function drain(params: Parameters<typeof handleRows>[1]): CanonicalRowV2[] {
+// Тип параметров выписан явно, а не через `Parameters<typeof handleRows>[1]`: после 100
+// у handleRows две перегрузки, и `Parameters<>` берёт ПОСЛЕДНЮЮ — проекционную. Тогда
+// весь этот тест молча начал бы работать с частичными строками, хотя проверяет полные.
+function drain(params: { symbols?: readonly string[]; fromMs?: number; toMs?: number; limit?: number }): CanonicalRowV2[] {
   const out: CanonicalRowV2[] = [];
   let cursor: string | undefined;
   let pages = 0;
