@@ -20,6 +20,7 @@ import {
   HISTORICAL_PROJECTION_KINDS,
   IDENTITY_COLUMNS,
   COLUMNS_BY_KIND,
+  type HistoricalProjectionKind,
 } from '../../src/contract/historical-read/projection-kinds.js';
 import { isOpsError } from '../../src/contract/common/errors.js';
 
@@ -49,6 +50,27 @@ const rows = Array.from({ length: N }, (_, i) => row('AAAUSDT', T0 + i * 60_000,
 const bundle = { historical: { rowsBySymbol: { AAAUSDT: rows }, barsBySymbolAndTimeframe: {} } } as unknown as SnapshotBundle;
 const emptyBundle = {} as unknown as SnapshotBundle;
 
+// НЕЗАВИСИМЫЙ oracle: разбиение схемы по видам, выписанное здесь РУКАМИ и НЕ
+// импортируемое из `projection-kinds`.
+//
+// Без него разбиение нигде не зафиксировано независимо: и `projectRow`, и
+// ожидание теста брали бы `COLUMNS_BY_KIND`, поэтому ПЕРЕНОС колонки из одного
+// вида в другой менял бы обе стороны разом. Объединение осталось бы теми же 19
+// полями, проверка покрытия схемы промолчала бы, и табличный прогон остался бы
+// зелёным. Проверено мутацией 2026-08-07 (`has_oi` из open_interest в funding):
+// покраснела единственная проверка, где список был набран руками, — то есть
+// защита существовала, но случайно.
+//
+// Расхождение этой таблицы с `COLUMNS_BY_KIND` — красный тест. Менять её надо
+// осознанно и вместе со схемой, в этом и смысл.
+const EXPECTED_COLUMNS: Readonly<Record<HistoricalProjectionKind, readonly string[]>> = {
+  candles: ['open', 'high', 'low', 'close', 'volume', 'turnover'],
+  open_interest: ['oi_total_usd', 'has_oi'],
+  liquidations: ['liq_long_usd', 'liq_short_usd', 'has_liquidations'],
+  taker_volume: ['taker_buy_volume_usd', 'taker_sell_volume_usd', 'has_taker_flow'],
+  funding: ['funding_rate', 'has_funding'],
+};
+
 const CANDLES = ['open', 'high', 'low', 'close', 'volume', 'turnover'];
 const NOT_CANDLES = [
   'oi_total_usd', 'has_oi', 'funding_rate', 'has_funding',
@@ -75,6 +97,15 @@ describe('100 (Д1): словарь видов покрывает схему', (
     expect([...HISTORICAL_PROJECTION_KINDS]).toEqual([
       'candles', 'open_interest', 'liquidations', 'taker_volume', 'funding',
     ]);
+  });
+
+  // Единственное место, где разбиение схемы по видам зафиксировано НЕЗАВИСИМО от
+  // словаря, которым пользуется реализация. Ловит перенос колонки между видами —
+  // мутацию, при которой объединение остаётся теми же 19 полями.
+  it('разбиение по видам совпадает с независимым списком теста', () => {
+    for (const k of HISTORICAL_PROJECTION_KINDS) {
+      expect(new Set(COLUMNS_BY_KIND[k] as readonly string[])).toEqual(new Set(EXPECTED_COLUMNS[k]));
+    }
   });
 });
 
@@ -112,15 +143,16 @@ describe('100 (Д1): проекция удаляет поля, а не обну�
   // нельзя будет добавить, не получив для него проверку автоматически.
   it.each(HISTORICAL_PROJECTION_KINDS.map((k) => [k] as const))(
     'вид %s: отдаются ровно его колонки и identity, остальные отсутствуют',
-    (kind) => {
-      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[kind]]);
+    (kind: HistoricalProjectionKind) => {
+      // Ожидание — из НЕЗАВИСИМОГО списка, не из словаря реализации.
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...EXPECTED_COLUMNS[kind]]);
       const projected = page([kind]);
       expect(projected.items).toHaveLength(N);
       const full = new Map(page().items.map((r) => [`${r.minute_ts}|${r.symbol}`, r]));
       for (const r of projected.items) {
         expect(new Set(Object.keys(r))).toEqual(wanted);
         const f = full.get(`${r.minute_ts}|${r.symbol}`)!;
-        for (const c of COLUMNS_BY_KIND[kind]) {
+        for (const c of EXPECTED_COLUMNS[kind]) {
           expect(r[c as keyof typeof r]).toEqual(f[c as keyof typeof f]);
         }
       }
@@ -134,7 +166,7 @@ describe('100 (Д1): проекция удаляет поля, а не обну�
       ['candles', 'liquidations'],
     ];
     for (const [a, b] of pairs) {
-      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[a], ...COLUMNS_BY_KIND[b]]);
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...EXPECTED_COLUMNS[a], ...EXPECTED_COLUMNS[b]]);
       for (const r of page([a, b]).items) expect(new Set(Object.keys(r))).toEqual(wanted);
     }
   });
@@ -229,8 +261,8 @@ describe('100 (Д1): HTTP-граница мока ведёт себя как п�
   // может протечь.
   it.each(HISTORICAL_PROJECTION_KINDS.map((k) => [k] as const))(
     'HTTP, вид %s: в ответе ровно его колонки и identity',
-    async (kind) => {
-      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[kind]]);
+    async (kind: HistoricalProjectionKind) => {
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...EXPECTED_COLUMNS[kind]]);
       const res = await fetch(`${baseUrl}/historical/rows?symbols=BTCUSDT&kinds=${kind}`);
       expect(res.status).toBe(200);
       const body = (await res.json()) as Body;
