@@ -1,5 +1,13 @@
 import type { SnapshotBundle } from '../../contract/snapshot/bundle.js';
 import type { RowsPage, CanonicalRowV2 } from '../../contract/historical-read/dto.js';
+import type { PageEnvelope } from '../../contract/common/envelopes.js';
+import {
+  HISTORICAL_PROJECTION_KINDS,
+  isHistoricalProjectionKind,
+  projectRow,
+  type HistoricalProjectionKind,
+  type ProjectedCanonicalRowV2,
+} from '../../contract/historical-read/projection-kinds.js';
 import type { OpsError } from '../../contract/common/errors.js';
 import { readRows, isKnownHistoricalSymbol, isCoarseOnlySymbol } from '../../snapshot/readers/rows.js';
 import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
@@ -25,12 +33,64 @@ function noMinuteGrain(symbols?: readonly string[]): OpsError {
   };
 }
 
+/** 100 (Д1): страница под проекцию. Без `kinds` совпадает с `RowsPage` строка в строку. */
+export type ProjectedRowsPage = PageEnvelope<ProjectedCanonicalRowV2>;
+
+/**
+ * Незнакомый вид — ОТКАЗ, а не игнор, и мок обязан отказывать так же, как реальная
+ * платформа. Молчаливо отдать меньше, чем просили, здесь опаснее всего: потребитель
+ * это бэктестер, он прочитает отсутствие вида как рыночный факт («ликвидаций не
+ * было»), а не как свою опечатку. Мок, который на такой запрос отвечает 200 с
+ * полными строками, отладил бы потребителя ровно до первой встречи с продом.
+ */
+function unknownKinds(unknown: readonly string[]): OpsError {
+  return {
+    category: 'validation_error',
+    code: 'unknown_kinds',
+    message: `unknown kinds [${unknown.join(', ')}]; supported: ${HISTORICAL_PROJECTION_KINDS.join(', ')}`,
+  };
+}
+
 export function handleRows(
   bundle: SnapshotBundle,
-  params: { symbols?: readonly string[]; fromMs?: number; toMs?: number; limit?: number },
+  params: {
+    symbols?: readonly string[]; fromMs?: number; toMs?: number; limit?: number;
+    kinds?: undefined;
+  },
   asOf: number,
   cursor?: string,
-): RowsPage | OpsError {
+): RowsPage | OpsError;
+export function handleRows(
+  bundle: SnapshotBundle,
+  params: {
+    symbols?: readonly string[]; fromMs?: number; toMs?: number; limit?: number;
+    kinds?: readonly string[];
+  },
+  asOf: number,
+  cursor?: string,
+): ProjectedRowsPage | OpsError;
+export function handleRows(
+  bundle: SnapshotBundle,
+  params: {
+    symbols?: readonly string[] | undefined; fromMs?: number | undefined;
+    toMs?: number | undefined; limit?: number | undefined;
+    kinds?: readonly string[] | undefined;
+  },
+  asOf: number,
+  cursor?: string,
+): RowsPage | ProjectedRowsPage | OpsError {
+  // `| undefined` в типе параметра обязателен под exactOptionalPropertyTypes: без
+  // него сигнатура реализации не принимает `kinds?: undefined` из первой перегрузки.
+  // ВАЛИДАЦИЯ ФОРМЫ ЗАПРОСА — ДО ЛЮБЫХ РАННИХ ВЫХОДОВ. Отказ, который отменяется
+  // тем, что в снимке не оказалось данных (или что символ незнаком), — не отказ;
+  // ровно этот дефект чинился на платформе тем же порядком проверок.
+  let kinds: readonly HistoricalProjectionKind[] | undefined;
+  if (params.kinds !== undefined && params.kinds.length > 0) {
+    const bad = params.kinds.filter((k) => !isHistoricalProjectionKind(k));
+    if (bad.length > 0) return unknownKinds(bad);
+    kinds = params.kinds as readonly HistoricalProjectionKind[];
+  }
+
   if (!bundle.historical) return unavailable();
 
   const hist = bundle.historical;
@@ -82,8 +142,15 @@ export function handleRows(
     a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0),
   );
 
+  // Проекция применяется ПОСЛЕ сортировки и ДО пагинации: порядок задаётся парой
+  // (minute_ts, symbol), а она входит в identity и из проекции не выпадает — ни
+  // порядок, ни курсор от набора видов не зависят.
+  const projected: ProjectedCanonicalRowV2[] = kinds === undefined
+    ? rows
+    : rows.map((r) => projectRow(r, kinds));
+
   try {
-    return paginate(rows, cursor, limit, {
+    return paginate(projected, cursor, limit, {
       asOf,
       window: {
         ...(fromMs !== undefined ? { fromMs } : {}),
