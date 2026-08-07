@@ -105,6 +105,40 @@ describe('100 (Д1): проекция удаляет поля, а не обну�
     for (const r of page().items) expect(Object.keys(r)).toHaveLength(19);
   });
 
+  // Табличный прогон по ВСЕМ пяти видам, а не по трём удобным. До этого
+  // `liquidations` и `taker_volume` жили только в статической проверке словаря:
+  // опечатка в их колонках прошла бы мимо тестов, а зеркальность контракта
+  // именно на них и держится. Таблица строится ИЗ словаря, поэтому шестой вид
+  // нельзя будет добавить, не получив для него проверку автоматически.
+  it.each(HISTORICAL_PROJECTION_KINDS.map((k) => [k] as const))(
+    'вид %s: отдаются ровно его колонки и identity, остальные отсутствуют',
+    (kind) => {
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[kind]]);
+      const projected = page([kind]);
+      expect(projected.items).toHaveLength(N);
+      const full = new Map(page().items.map((r) => [`${r.minute_ts}|${r.symbol}`, r]));
+      for (const r of projected.items) {
+        expect(new Set(Object.keys(r))).toEqual(wanted);
+        const f = full.get(`${r.minute_ts}|${r.symbol}`)!;
+        for (const c of COLUMNS_BY_KIND[kind]) {
+          expect(r[c as keyof typeof r]).toEqual(f[c as keyof typeof f]);
+        }
+      }
+    },
+  );
+
+  it('пары видов дают ровно объединение их колонок', () => {
+    const pairs: (readonly [(typeof HISTORICAL_PROJECTION_KINDS)[number], (typeof HISTORICAL_PROJECTION_KINDS)[number]])[] = [
+      ['liquidations', 'taker_volume'],
+      ['open_interest', 'funding'],
+      ['candles', 'liquidations'],
+    ];
+    for (const [a, b] of pairs) {
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[a], ...COLUMNS_BY_KIND[b]]);
+      for (const r of page([a, b]).items) expect(new Set(Object.keys(r))).toEqual(wanted);
+    }
+  });
+
   it('порядок видов не влияет на результат', () => {
     expect(page(['candles', 'funding']).items).toEqual(page(['funding', 'candles']).items);
   });
@@ -189,6 +223,21 @@ describe('100 (Д1): HTTP-граница мока ведёт себя как п�
     const res = await fetch(`${baseUrl}/historical/rows?symbols=НЕТТАКОГО&kinds=bogus`);
     expect(res.status).toBe(400);
   });
+
+  // Тот же табличный прогон, но через настоящую HTTP-границу: разбор CSV и
+  // сборка ответа — отдельный от обработчика код, и мимо него проекция тоже
+  // может протечь.
+  it.each(HISTORICAL_PROJECTION_KINDS.map((k) => [k] as const))(
+    'HTTP, вид %s: в ответе ровно его колонки и identity',
+    async (kind) => {
+      const wanted = new Set<string>([...IDENTITY_COLUMNS, ...COLUMNS_BY_KIND[kind]]);
+      const res = await fetch(`${baseUrl}/historical/rows?symbols=BTCUSDT&kinds=${kind}`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Body;
+      expect(body.items.length).toBeGreaterThan(0);
+      for (const r of body.items) expect(new Set(Object.keys(r))).toEqual(wanted);
+    },
+  );
 
   it('без kinds — все 19 полей, как до 100', async () => {
     const res = await fetch(`${baseUrl}/historical/rows?symbols=BTCUSDT`);
