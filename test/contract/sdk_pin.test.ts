@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { checkSpecifier } from '../../scripts/verify_sdk_pin.js';
+import { EXPECTED_SDK_VERSION, checkSpecifier } from '../../scripts/verify_sdk_pin.js';
 
-const PINNED = '0.13.0';
+// Берётся у гейта, а не повторяется литералом. Продублированный номер протухает
+// после первого бампа, и тест начинает падать не потому, что пин неверен, а
+// потому, что тест помнит прошлую эпоху.
+const PINNED = EXPECTED_SDK_VERSION;
 const NOT_EXACT = /is not an exact npm version/;
 
 // The mock consumed the SDK as a non-registry artifact for its whole history — first a vendored
