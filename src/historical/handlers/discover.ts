@@ -4,6 +4,7 @@ import { HISTORICAL_READ_CONTRACT_VERSION } from '../../contract/historical-read
 import { HISTORICAL_PROJECTION_KINDS } from '../../contract/historical-read/projection-kinds.js';
 import { MAX_PAGE } from '../../ops/pagination.js';
 import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
+import { availabilityOf, buildAvailabilityDescriptor } from './preflight.js';
 
 const CAPABILITIES: HistoricalCapabilities = {
   readOnly: true,
@@ -69,5 +70,8 @@ export function buildHistoricalDiscover(bundle: SnapshotBundle): HistoricalCapab
       : RESOURCES.map((r) => ({ ...r, availability: 'unavailable' as const })),
     symbols,
     timeframes: presentTimeframes,
+    // Диагностически: discover сообщает состояние индекса и НЕ отказывает даже
+    // при `invalid`. Отказывает допуск — там, где по состоянию принимается решение.
+    availability: buildAvailabilityDescriptor(availabilityOf(bundle)),
   };
 }

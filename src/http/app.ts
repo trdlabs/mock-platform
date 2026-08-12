@@ -17,6 +17,7 @@ import { handleRuntimeHealth, handleMarketHealth, handleExecutionHealth } from '
 import { handleCoverage } from '../ops/handlers/coverage.js';
 import { handleAnalysis } from '../ops/handlers/analysis.js';
 import { startReplay } from '../events/ws-adapter.js';
+import { handleHistoricalPreflight } from '../historical/handlers/preflight.js';
 import { buildHistoricalDiscover } from '../historical/handlers/discover.js';
 import { handleRows } from '../historical/handlers/rows.js';
 import { handleHistoricalCoverage } from '../historical/handlers/coverage.js';
@@ -88,6 +89,14 @@ export function createApp(deps: AppDeps) {
   const toNum = (v: string | undefined): number | undefined => (v !== undefined ? Number(v) : undefined);
 
   app.get('/historical/discover', (c) => c.json(buildHistoricalDiscover(bundle), 200));
+
+  // Д3 (3.3б) — ЕДИНСТВЕННОЕ место, где действует policy-clamp. `/historical/rows`
+  // остаётся диагностическим и здесь тоже.
+  app.get('/historical/preflight', (c) => {
+    const q = c.req.query();
+    const out = handleHistoricalPreflight(bundle, q['fromMs'], q['toMs'], now());
+    return c.json(out.body, out.status as 200 | 400 | 409 | 503);
+  });
   // symbols is CSV (plural).
   app.get('/historical/rows', (c) => {
     const symbols = (c.req.query('symbols') ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);

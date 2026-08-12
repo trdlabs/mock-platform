@@ -83,6 +83,8 @@ export interface HistoricalCapabilityDescriptor {
   readonly resources: readonly HistoricalResourceDescriptor[];
   readonly symbols: readonly string[];
   readonly timeframes: readonly Timeframe[];
+  /** Д3 (3.3б) — состояние индекса доступности, диагностически. */
+  readonly availability: import('./availability.js').AvailabilityDescriptor;
 }
 
 // --- canonical row v2 (sourced from trading-platform SDK via the historical SDK seam, 19 fields) ---

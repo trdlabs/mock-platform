@@ -8,6 +8,13 @@ import type { ResearchRunResult } from '../research-read/dto.js';
 import type { OhlcvBar, FundingEntry, OpenInterestEntry, LiquidationEntry, CanonicalRowV2 } from '../historical-read/dto.js';
 
 export interface HistoricalBundle {
+  /**
+   * Д3 (3.3б) — состояние индекса доступности бэктеста. Задаётся ФИКСТУРОЙ:
+   * у настоящей платформы способа сменить его по HTTP нет, и заводить такой
+   * у мока значило бы дать потребителю поверхность, которой на проде нет.
+   * Молчание фикстуры = `not_initialized`, а не `empty`.
+   */
+  readonly availability?: import('../historical-read/availability.js').AvailabilityFixture;
   readonly barsBySymbolAndTimeframe: Readonly<Record<string, Readonly<Record<string, readonly OhlcvBar[]>>>>;
   readonly fundingBySymbol: Readonly<Record<string, readonly FundingEntry[]>>;
   readonly openInterestBySymbol: Readonly<Record<string, readonly OpenInterestEntry[]>>;
