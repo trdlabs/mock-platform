@@ -20,6 +20,7 @@ import { startReplay } from '../events/ws-adapter.js';
 import { handleHistoricalPreflight } from '../historical/handlers/preflight.js';
 import { buildHistoricalDiscover } from '../historical/handlers/discover.js';
 import { handleRows } from '../historical/handlers/rows.js';
+import { isDayIntegrityRejection } from '../contract/historical-read/day-integrity.js';
 import { handleHistoricalCoverage } from '../historical/handlers/coverage.js';
 
 export interface AppDeps {
@@ -106,13 +107,18 @@ export function createApp(deps: AppDeps) {
     // 100 (Д1): kinds — CSV, как и symbols. Пустая строка = параметра нет (все виды),
     // непустая — проверяется обработчиком и незнакомое значение даёт 400.
     const kinds = (c.req.query('kinds') ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
-    return respond(c, handleRows(bundle, {
+    const result = handleRows(bundle, {
       symbols,
       ...(fromMs !== undefined ? { fromMs } : {}),
       ...(toMs !== undefined ? { toMs } : {}),
       ...(limit !== undefined ? { limit } : {}),
       ...(kinds.length > 0 ? { kinds } : {}),
-    }, now(), c.req.query('cursor')));
+    }, now(), c.req.query('cursor'));
+    // Отказ целостности идёт мимо `respond`: тот знает только карту OpsError
+    // (404/500/400), а 409 в ней нет и появиться не должен — это не ошибка
+    // запроса и не отсутствие данных, а недостоверность самих данных.
+    if (isDayIntegrityRejection(result)) return c.json(result.body, result.status);
+    return respond(c, result);
   });
   app.get('/historical/coverage', (c) => c.json(handleHistoricalCoverage(bundle, now()), 200));
 

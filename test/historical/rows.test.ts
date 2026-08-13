@@ -46,8 +46,12 @@ const bundle = {
 
 const ASOF = 1_000;
 
-function isPage(r: RowsPage | { category: string }): r is RowsPage {
-  return 'items' in r;
+// Тип параметра `unknown`, а не объединение исходов: у `handleRows` их теперь три
+// (страница, OpsError, отказ целостности), и перечислять их здесь значило бы
+// править этот предикат при каждом новом исходе. Предикат отвечает на один
+// вопрос — «это страница?» — и для него достаточно наличия `items`.
+function isPage(r: unknown): r is RowsPage {
+  return typeof r === 'object' && r !== null && 'items' in r;
 }
 
 /** Drain every page, following nextCursor — the order under test is a property of the
