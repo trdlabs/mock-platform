@@ -143,3 +143,63 @@ describe('HTTP: отказ идёт мимо карты OpsError', () => {
     expect(r.body.items).toHaveLength(N);
   });
 });
+
+describe('область отказа — день, определённый ГРАНИЦАМИ ЗАПРОСА', () => {
+  it('пустое окно ПОВРЕЖДЁННОГО дня — тоже 409', () => {
+    // Окно внутри дня, где строк нет вовсе. Определяй мок затронутые дни по
+    // НАЛИЧИЮ строк — день не пометился бы затронутым, дубль не искался бы, и
+    // ответом стала бы пустая 200 там, где платформа отказывает.
+    const emptyFrom = DAY + (N + 5) * MIN;
+    const res = handleRows(bundleWithSeam, { symbols: [SYMBOL], fromMs: emptyFrom, toMs: emptyFrom + MIN, limit: 50 }, ASOF);
+    expect(isDayIntegrityRejection(res)).toBe(true);
+  });
+
+  it('окно ДРУГОГО, исправного дня — 200', () => {
+    // Иначе нельзя отличить работающий инвариант от сервиса, отказывающего на всё.
+    const other = DAY + 86_400_000;
+    const clean = {
+      historical: {
+        rowsBySymbol: {
+          [SYMBOL]: [
+            ...seamRows(),
+            ...Array.from({ length: N }, (_, i) => row(SYMBOL, other + i * MIN, 1)),
+          ],
+        },
+        barsBySymbolAndTimeframe: {},
+      },
+    } as unknown as SnapshotBundle;
+    const res = handleRows(clean, { symbols: [SYMBOL], fromMs: other, toMs: other + N * MIN, limit: 50 }, ASOF);
+    expect(isDayIntegrityRejection(res)).toBe(false);
+    expect((res as unknown as { items: unknown[] }).items).toHaveLength(N);
+  });
+
+  it('НЕИЗВЕСТНЫЙ символ — прежняя пустая 200, а не отказ', () => {
+    // Платформа на этом входе отвечает пустой страницей, не читая дня вовсе:
+    // отдавать нечего и скрывать нечего. Мок обязан вести себя так же.
+    const res = handleRows(bundleWithSeam, { symbols: ['НЕТТАКОГО'], limit: 50 }, ASOF);
+    expect(isDayIntegrityRejection(res)).toBe(false);
+    expect((res as unknown as { items: unknown[] }).items).toEqual([]);
+  });
+
+  it('ПУСТОЙ набор символов — тоже пустая 200', () => {
+    const res = handleRows(bundleWithSeam, { symbols: [], limit: 50 }, ASOF);
+    expect(isDayIntegrityRejection(res)).toBe(false);
+    expect((res as unknown as { items: unknown[] }).items).toEqual([]);
+  });
+
+  it('дубль у ДРУГОГО символа того же дня блокирует запрос', () => {
+    // Недостоверен день, а не символ.
+    const two = {
+      historical: {
+        rowsBySymbol: {
+          [SYMBOL]: seamRows(),
+          BBBUSDT: Array.from({ length: N }, (_, i) => row('BBBUSDT', DAY + i * MIN, 1)),
+        },
+        barsBySymbolAndTimeframe: {},
+      },
+    } as unknown as SnapshotBundle;
+    const res = handleRows(two, { symbols: ['BBBUSDT'], limit: 50 }, ASOF);
+    expect(isDayIntegrityRejection(res)).toBe(true);
+    if (isDayIntegrityRejection(res)) expect(res.body.symbol).toBe(SYMBOL);
+  });
+});

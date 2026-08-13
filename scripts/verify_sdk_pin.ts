@@ -16,7 +16,7 @@ const SDK_PKG = '@trdlabs/sdk';
 // Экспортируется, чтобы тест не повторял номер литералом. Дублированное число
 // протухает после первого же бампа: скрипт уже знает новую версию, а тест всё
 // ещё утверждает старую — и красный прогон говорит не о пине, а о самом себе.
-export const EXPECTED_SDK_VERSION = '0.16.0';
+export const EXPECTED_SDK_VERSION = '0.17.1';
 /** The ops-read contract version the mock's fixtures + compat gate pin. The SDK is the source of
  *  truth; this constant is the value we REQUIRE the published SDK to carry (drift = hard fail). */
 const EXPECTED_OPS_VERSION = 'ops.6';

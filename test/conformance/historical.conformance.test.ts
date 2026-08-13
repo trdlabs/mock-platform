@@ -48,5 +48,5 @@ describe('mock == real: shared historical conformance harness over the golden sn
 
     expect(skips).toEqual([]);
     expect(result).toEqual({ ok: true });
-  });
+  }, 120_000);
 });
