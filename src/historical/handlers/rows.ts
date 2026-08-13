@@ -124,6 +124,42 @@ export function handleRows(
     if (!minuteGrainAvailable) return noMinuteGrain();
   }
 
+  // ЦЕЛОСТНОСТЬ ПРОВЕРЯЕТСЯ НАД ВСЕМ ЗАТРОНУТЫМ ДНЁМ ПО ВСЕМ СИМВОЛАМ — до
+  // фильтров symbols/fromMs/toMs/kinds и до пагинации.
+  //
+  // Первая редакция проверяла отфильтрованный набор, и мок отдавал 200 на чистое
+  // окно повреждённого дня, тогда как платформа отказывала: она грузит день
+  // целиком. Расхождение нашёл conformance-харнесс — две реализации одного
+  // контракта разошлись молча, и именно для этого харнесс и существует.
+  //
+  // Область — ДЕНЬ, а не запрос: недостоверен день, и знание об этом не должно
+  // зависеть от того, какое окно и какие символы спросили. Дубль у соседнего
+  // символа блокирует запрос так же, как свой.
+  //
+  // Текущие UTC-сутки исключаются: открытый день ещё дописывается, «весь день»
+  // для него не существует как величина, и он остаётся request-scoped.
+  {
+    const todayUtc = new Date(asOf).toISOString().slice(0, 10);
+    const daysTouched = new Set<string>();
+    const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+    for (const s of Object.keys(hist.rowsBySymbol ?? {})) {
+      for (const r of hist.rowsBySymbol![s] ?? []) {
+        const inWindow = (fromMs === undefined || r.minute_ts >= fromMs) && (toMs === undefined || r.minute_ts < toMs);
+        if (inWindow) daysTouched.add(dayOf(r.minute_ts));
+      }
+    }
+    const dayRows: CanonicalRowV2[] = [];
+    for (const s of Object.keys(hist.rowsBySymbol ?? {})) {
+      for (const r of hist.rowsBySymbol![s] ?? []) {
+        const d = dayOf(r.minute_ts);
+        if (d !== todayUtc && daysTouched.has(d)) dayRows.push(r);
+      }
+    }
+    dayRows.sort((a, b) => a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+    const dayDuplicate = findDuplicateRowKey(dayRows);
+    if (dayDuplicate !== null) return dayDuplicate;
+  }
+
   // Gather rows for every requested symbol. Unknown symbols contribute nothing
   // (readRows returns []) — no match yields an empty page.
   const rows: CanonicalRowV2[] = [];
@@ -143,6 +179,10 @@ export function handleRows(
     a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0),
   );
 
+  // Остаточная проверка — для ОТКРЫТОГО дня, который в day-wide проход выше не
+  // входит: там «весь день» не определён, и область отказа request-scoped.
+  // Для закрытых дней она избыточна и никогда не срабатывает — их уже проверили.
+  //
   // Целостность ключа — ПОСЛЕ сортировки и ДО проекции с пагинацией.
   //
   // Место то же, что на платформе, и по той же причине: на уровне страницы дубль
