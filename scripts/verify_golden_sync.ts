@@ -1,9 +1,19 @@
 // verify_golden_sync — proves the vendored platform historical golden has not drifted.
 //
-//  HARD : sha256(local vendored copy) === recorded .sha256 (tamper detect).
-//  SOFT : if the platform repo is reachable, byte-compare the vendored copy against the
-//         live source (source-drift detect). Repo unreachable / artifact absent =>
-//         warning + skip the cross-repo check (the local sha stays hard).
+//  (1) sha256(local vendored copy) === recorded .sha256 (tamper detect).
+//  (2) byte-compare the vendored copy against the live platform source (source-drift detect).
+//
+// ОБЕ ПРОВЕРКИ ОБЯЗАТЕЛЬНЫ. Вторая была «мягкой»: недостижимый источник давал WARN и
+// ЗЕЛЁНЫЙ выход. Пропущенный гейт выглядит как пройденный, а этот пропускался тем чаще,
+// чем меньше о нём знали, — в шапке ниже уже описан один такой период, когда путь вёл в
+// постороннюю папку и сверка не выполнялась НИ РАЗУ.
+//
+// Второй раз это случилось из-за git worktree: путь считался от корня РАБОЧЕГО ДЕРЕВА,
+// поэтому из `.claude/worktrees/<name>` сиблинг разрешался в
+// `.claude/worktrees/platform` — каталог, которого не существует. Любая работа в дереве
+// молча теряла сверку. Поэтому корень берётся из `--git-common-dir` (он указывает на
+// главный чекаут независимо от того, откуда запущено), а недостижимость источника —
+// отказ, а не предупреждение.
 //
 // The golden fixture's byte-identity source of truth is the platform repo
 // (test/fixtures/historical-golden/MANIFEST.json). The SDK does not own it, so it cannot come
@@ -19,6 +29,7 @@
 // Был .mjs на голом node; стал .ts под tsx, потому что PLATFORM_REPO теперь читается через
 // типизированный src/env.ts (env-catalog item 5) — единственную точку чтения окружения в репо.
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
@@ -36,10 +47,28 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-// Sibling-relative, not an absolute machine path: a hardcoded
-// /home/.../projects/trading-platform once pointed at an unrelated stub directory, so the
-// cross-repo check below WARNed and skipped on every run instead of ever comparing anything.
-const PLATFORM = loadEnv().PLATFORM_REPO ?? resolve(repoRoot, '../platform');
+// Корень для поиска сиблинга — ГЛАВНЫЙ чекаут, а не текущее рабочее дерево.
+//
+// Абсолютный путь тут уже был однажды и вёл в постороннюю папку. Сиблинг от `repoRoot`
+// его сменил и чинил тот случай, но завёл свой: из git worktree `repoRoot` — это
+// `.claude/worktrees/<name>`, и сиблинг разрешается в `.claude/worktrees/platform`,
+// которого не существует. `--git-common-dir` указывает на главный чекаут откуда угодно.
+function mainCheckoutRoot(): string {
+  try {
+    const commonDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    // `<главный чекаут>/.git` → сам чекаут. Пустой ответ означает «не git» — тогда
+    // остаётся рабочее дерево, и ниже недостижимость всё равно станет отказом.
+    return commonDir.length > 0 ? dirname(commonDir) : repoRoot;
+  } catch {
+    return repoRoot;
+  }
+}
+
+const PLATFORM = loadEnv().PLATFORM_REPO ?? resolve(mainCheckoutRoot(), '../platform');
 
 // --- HARD: vendored platform golden matches its recorded checksum ---
 if (!existsSync(GOLDEN)) fail(`vendored golden missing: ${GOLDEN}`);
@@ -52,10 +81,37 @@ if (goldenSha !== recordedGoldenSha) {
   fail(`vendored golden sha256 mismatch (local tamper):\n  recorded ${recordedGoldenSha}\n  actual   ${goldenSha}`);
 }
 
-// --- SOFT: cross-repo byte-identity against the live platform MANIFEST ---
+// Режим `--local-only`: выполнить ТОЛЬКО проверку (1).
+//
+// Он существует ради одного окружения — публичного CI этого репозитория, где источник
+// (приватный `trdlabs/platform`) недостижим и достижим быть не может без секрета.
+// Раньше там запускался полный гейт и молча зеленел, объявляя пройденным то, чего не
+// делал. Теперь окружение, которое не может выполнить сверку, обязано СКАЗАТЬ об этом
+// именем команды, а не кодом возврата.
+//
+// Сама cross-repo сверка от этого не исчезает: она переезжает в CI платформы, где есть
+// источник и откуда публичный мок клонируется без единого секрета. Направление доступа
+// работает только в эту сторону.
+const LOCAL_ONLY = process.argv.includes('--local-only');
+if (LOCAL_ONLY) {
+  console.log('verify_golden_sync: OK (--local-only: сверена только вендоренная копия против своей sha256)');
+  console.log('verify_golden_sync: cross-repo сверка ЗДЕСЬ НЕ ВЫПОЛНЯЛАСЬ — её делает CI платформы');
+  process.exit(0);
+}
+
+// --- (2) cross-repo byte-identity against the live platform MANIFEST ---
 const PLATFORM_GOLDEN = join(PLATFORM, 'test/fixtures/historical-golden/MANIFEST.json');
 if (!existsSync(PLATFORM) || !existsSync(PLATFORM_GOLDEN)) {
-  console.warn(`verify_golden_sync: WARN — platform golden unreachable (${PLATFORM_GOLDEN}); cross-repo check skipped`);
+  // ОТКАЗ, а не предупреждение. Недостижимый источник означает, что сверка НЕ
+  // ВЫПОЛНЕНА, — а «не выполнена» и «выполнена и совпало» обязаны различаться кодом
+  // возврата, иначе гейт доказывает только то, что его запустили.
+  fail(
+    `cross-repo сверка НЕ ВЫПОЛНЕНА: источник недостижим (${PLATFORM_GOLDEN}).
+` +
+      `  Это отказ, а не пропуск: вендоренная копия могла разойтись с платформой, и здесь это не проверено.
+` +
+      `  Почини одним из двух: сделай чекаут платформы рядом с главным чекаутом мока, либо задай PLATFORM_REPO=<путь>.`,
+  );
 } else {
   const platformGoldenBuf = readFileSync(PLATFORM_GOLDEN);
   if (sha256(platformGoldenBuf) !== goldenSha) {
