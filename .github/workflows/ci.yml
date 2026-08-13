@@ -27,10 +27,18 @@ jobs:
       - run: pnpm verify:no-forbidden-deps
       - run: pnpm verify:no-secrets
       - run: pnpm verify:sdk-pin
-      # The golden gate only ever ran in the local `check:ci` chain, never here. Its HARD half
-      # (vendored golden matches its recorded sha256) works fine on a runner; the cross-repo half
-      # WARN-skips without a platform checkout, which is its documented behaviour.
-      - run: pnpm verify:golden-sync
+      # ТОЛЬКО локальная половина, и это сказано ИМЕНЕМ КОМАНДЫ, а не спрятано в коде
+      # возврата. Cross-repo сверка здесь неисполнима: источник — приватный
+      # `trdlabs/platform`, а этот репозиторий публичный и секретов не имеет.
+      #
+      # Раньше тут стоял полный `verify:golden-sync`, который в этих условиях печатал WARN
+      # и завершался НУЛЁМ. Гейт, объявляющий пройденным то, чего не делал, хуже
+      # отсутствующего: отсутствующий хотя бы виден.
+      #
+      # Сама сверка не исчезла — она переехала в CI платформы (pl#210), где источник есть,
+      # а публичный мок клонируется без единого секрета. Направление доступа работает
+      # только в эту сторону.
+      - run: pnpm verify:golden-sha
       - run: pnpm verify:fixtures
 
   fetch-tools:
