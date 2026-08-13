@@ -127,37 +127,54 @@ export function handleRows(
   // ЦЕЛОСТНОСТЬ ПРОВЕРЯЕТСЯ НАД ВСЕМ ЗАТРОНУТЫМ ДНЁМ ПО ВСЕМ СИМВОЛАМ — до
   // фильтров symbols/fromMs/toMs/kinds и до пагинации.
   //
-  // Первая редакция проверяла отфильтрованный набор, и мок отдавал 200 на чистое
-  // окно повреждённого дня, тогда как платформа отказывала: она грузит день
-  // целиком. Расхождение нашёл conformance-харнесс — две реализации одного
-  // контракта разошлись молча, и именно для этого харнесс и существует.
-  //
   // Область — ДЕНЬ, а не запрос: недостоверен день, и знание об этом не должно
   // зависеть от того, какое окно и какие символы спросили. Дубль у соседнего
   // символа блокирует запрос так же, как свой.
   //
+  // ЗАТРОНУТЫЕ ДНИ ОПРЕДЕЛЯЮТСЯ ПО ГРАНИЦАМ ЗАПРОСА, А НЕ ПО НАЛИЧИЮ СТРОК.
+  // Обратное — тихая дыра: окно внутри повреждённого дня, где строк не
+  // оказалось, не пометило бы день затронутым, дубль не искался бы, и мок
+  // ответил бы пустой 200 там, где платформа отказывает.
+  //
+  // Проверка не выполняется, когда запрос НЕ ВЫБИРАЕТ НИ ОДНОГО известного
+  // символа: там отдавать нечего и скрывать нечего, а платформа на этом же
+  // входе отвечает пустой страницей, не читая дня вовсе.
+  //
   // Текущие UTC-сутки исключаются: открытый день ещё дописывается, «весь день»
   // для него не существует как величина, и он остаётся request-scoped.
-  {
-    const todayUtc = new Date(asOf).toISOString().slice(0, 10);
-    const daysTouched = new Set<string>();
+  if (known.length > 0) {
+    const DAY_MS = 86_400_000;
     const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-    for (const s of Object.keys(hist.rowsBySymbol ?? {})) {
-      for (const r of hist.rowsBySymbol![s] ?? []) {
-        const inWindow = (fromMs === undefined || r.minute_ts >= fromMs) && (toMs === undefined || r.minute_ts < toMs);
-        if (inWindow) daysTouched.add(dayOf(r.minute_ts));
+    const todayUtc = dayOf(asOf);
+
+    // Границы берутся из запроса; отсутствующая сторона — из самих данных, иначе
+    // открытый верхний предел развернулся бы в цикл по всей эпохе.
+    const allTs: number[] = [];
+    for (const sym of Object.keys(hist.rowsBySymbol ?? {})) {
+      for (const r of hist.rowsBySymbol![sym] ?? []) allTs.push(r.minute_ts);
+    }
+    if (allTs.length > 0) {
+      const lo = fromMs ?? Math.min(...allTs);
+      const hi = (toMs ?? Math.max(...allTs) + 1) - 1;
+      const touched = new Set<string>();
+      if (hi >= lo) {
+        for (let d = Date.parse(`${dayOf(lo)}T00:00:00.000Z`); d <= hi; d += DAY_MS) {
+          const day = dayOf(d);
+          if (day !== todayUtc) touched.add(day);
+        }
+      }
+      if (touched.size > 0) {
+        const dayRows: CanonicalRowV2[] = [];
+        for (const sym of Object.keys(hist.rowsBySymbol ?? {})) {
+          for (const r of hist.rowsBySymbol![sym] ?? []) {
+            if (touched.has(dayOf(r.minute_ts))) dayRows.push(r);
+          }
+        }
+        dayRows.sort((a, b) => a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+        const dayDuplicate = findDuplicateRowKey(dayRows);
+        if (dayDuplicate !== null) return dayDuplicate;
       }
     }
-    const dayRows: CanonicalRowV2[] = [];
-    for (const s of Object.keys(hist.rowsBySymbol ?? {})) {
-      for (const r of hist.rowsBySymbol![s] ?? []) {
-        const d = dayOf(r.minute_ts);
-        if (d !== todayUtc && daysTouched.has(d)) dayRows.push(r);
-      }
-    }
-    dayRows.sort((a, b) => a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
-    const dayDuplicate = findDuplicateRowKey(dayRows);
-    if (dayDuplicate !== null) return dayDuplicate;
   }
 
   // Gather rows for every requested symbol. Unknown symbols contribute nothing
