@@ -23,6 +23,7 @@ import {
   type HistoricalProjectionKind,
 } from '../../src/contract/historical-read/projection-kinds.js';
 import { isOpsError } from '../../src/contract/common/errors.js';
+import { isDayIntegrityRejection } from '../../src/contract/historical-read/day-integrity.js';
 
 function row(symbol: string, minute_ts: number, i: number): CanonicalRowV2 {
   return {
@@ -81,6 +82,10 @@ const NOT_CANDLES = [
 const page = (kinds?: readonly string[]) => {
   const r = handleRows(bundle, { symbols: ['AAAUSDT'], ...(kinds ? { kinds } : {}) }, 0);
   if (isOpsError(r)) throw new Error(`unexpected OpsError: ${r.code}`);
+  // Третий исход `handleRows` — отказ целостности ключа. Фикстура этого файла
+  // дублей не содержит, поэтому исход недостижим; отсекается явно, чтобы он не
+  // проехал в проверки проекции под видом страницы.
+  if (isDayIntegrityRejection(r)) throw new Error(`unexpected day-integrity rejection: ${r.body.symbol}`);
   return r;
 };
 
@@ -179,6 +184,7 @@ describe('100 (Д1): проекция удаляет поля, а не обну�
     const a = handleRows(bundle, { symbols: ['AAAUSDT'], limit: 5 }, 0);
     const b = handleRows(bundle, { symbols: ['AAAUSDT'], limit: 5, kinds: ['candles'] }, 0);
     if (isOpsError(a) || isOpsError(b)) throw new Error('unexpected OpsError');
+    if (isDayIntegrityRejection(a) || isDayIntegrityRejection(b)) throw new Error('unexpected day-integrity rejection');
     expect(b.nextCursor).toEqual(a.nextCursor);
     expect(b.items.map((r) => [r.minute_ts, r.symbol])).toEqual(a.items.map((r) => [r.minute_ts, r.symbol]));
   });

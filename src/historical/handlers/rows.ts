@@ -9,6 +9,7 @@ import {
   type ProjectedCanonicalRowV2,
 } from '../../contract/historical-read/projection-kinds.js';
 import type { OpsError } from '../../contract/common/errors.js';
+import { findDuplicateRowKey, type DayIntegrityRejection } from '../../contract/historical-read/day-integrity.js';
 import { readRows, isKnownHistoricalSymbol, isCoarseOnlySymbol } from '../../snapshot/readers/rows.js';
 import { hasMinuteGrainBars } from '../../snapshot/readers/rows-from-perkind.js';
 import { paginate, invalidCursor } from '../../ops/pagination.js';
@@ -59,7 +60,7 @@ export function handleRows(
   },
   asOf: number,
   cursor?: string,
-): RowsPage | OpsError;
+): RowsPage | DayIntegrityRejection | OpsError;
 export function handleRows(
   bundle: SnapshotBundle,
   params: {
@@ -68,7 +69,7 @@ export function handleRows(
   },
   asOf: number,
   cursor?: string,
-): ProjectedRowsPage | OpsError;
+): ProjectedRowsPage | DayIntegrityRejection | OpsError;
 export function handleRows(
   bundle: SnapshotBundle,
   params: {
@@ -78,7 +79,7 @@ export function handleRows(
   },
   asOf: number,
   cursor?: string,
-): RowsPage | ProjectedRowsPage | OpsError {
+): RowsPage | ProjectedRowsPage | DayIntegrityRejection | OpsError {
   // `| undefined` в типе параметра обязателен под exactOptionalPropertyTypes: без
   // него сигнатура реализации не принимает `kinds?: undefined` из первой перегрузки.
   // ВАЛИДАЦИЯ ФОРМЫ ЗАПРОСА — ДО ЛЮБЫХ РАННИХ ВЫХОДОВ. Отказ, который отменяется
@@ -141,6 +142,18 @@ export function handleRows(
   rows.sort((a, b) =>
     a.minute_ts - b.minute_ts || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0),
   );
+
+  // Целостность ключа — ПОСЛЕ сортировки и ДО проекции с пагинацией.
+  //
+  // Место то же, что на платформе, и по той же причине: на уровне страницы дубль
+  // виден не всегда, а только когда граница страницы не легла между копиями.
+  // Проверка страницы объявляла бы набор исправным ровно в тех запросах, где он
+  // уже соврал, — а число отданных строк продолжало бы зависеть от `limit`.
+  //
+  // Дедуп здесь запрещён: выбрать «правильную» из двух строк по данным нельзя,
+  // состав источников в строку не попадает. Починка идёт через repair с evidence.
+  const duplicate = findDuplicateRowKey(rows);
+  if (duplicate !== null) return duplicate;
 
   // Проекция применяется ПОСЛЕ сортировки и ДО пагинации: порядок задаётся парой
   // (minute_ts, symbol), а она входит в identity и из проекции не выпадает — ни
