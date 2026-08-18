@@ -14,3 +14,6 @@ dist/
 
 # Local git worktrees (isolation; never tracked)
 .worktrees/
+# Деревья, создаваемые Claude Code (см. scripts/worktree-init.sh) — тот же класс,
+# что и .worktrees/ выше.
+.claude/worktrees/
